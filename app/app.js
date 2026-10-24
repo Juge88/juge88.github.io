@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.7.2';
+const APP_VERSION = '1.7.3';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -80,6 +80,12 @@ function migrate() {
     });
     S.stock ??= {};
     S.version = 6; save();
+  }
+  if ((S.version || 1) < 7) {
+    // The dovetail is only in the 3D-printed templates, not in the wood, so the story no longer says it
+    const k = (S.types || []).find(t => t.id === 'kitchen'), d = DEFAULT_TYPES.find(t => t.id === 'kitchen');
+    if (k && d && k.build === OLD_DEFAULTS.kitchenBuild) k.build = d.build;
+    S.version = 7; save();
   }
   GR.on = S.settings.grain !== false;
   S.shop ??= DEFAULT_SHOP.slice();
@@ -248,23 +254,23 @@ const lum = hex => { const n = parseInt(hex.slice(1), 16); return 0.299 * (n >> 
 const ordinal = n => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 const an = w => /^[aeiou]/i.test(w || '') ? 'an' : 'a';
 
+// Bench only knows about pieces you logged. If your numbering starts above 1, earlier pieces are missing,
+// so it can't promise a combination is a first. You say so for each piece instead.
+function historyKnown() { const nos = S.pieces.map(q => q.no); return nos.length ? Math.min(...nos) <= 1 : (S.settings.nextNumber || 1) <= 1; }
+function comboKey(ids) { return [...new Set(ids)].sort().join('+'); }
+function comboBefore(p) { const key = comboKey(p.woods); return S.pieces.filter(q => q.id !== p.id && q.no < p.no && comboKey(q.woods) === key).length; }
+// true = say it's the first with this combination; false = say nothing
+function comboIsFirst(p) {
+  if (p.firstCombo === true) return true;
+  if (p.firstCombo === false) return false;
+  return historyKnown() && comboBefore(p) === 0;
+}
 function laminationNotes(p) {
-  const ids = p.woods, n = ids.length; if (n < 2) return [];
-  const notes = [], names = id => (woodById(id)?.name || '').toLowerCase();
-  const uniq = [...new Set(ids)];
-  const pal = ids.every((x, i) => x === ids[n - 1 - i]);
-  if (pal && n >= 3) notes.push('The lamination is mirrored, so it reads the same from either side.');
-  if (n % 2 === 1 && n >= 3) { const c = ids[(n - 1) / 2]; if (ids.filter(x => x === c).length === 1 && uniq.length > 1) notes.push(`A single strip of ${names(c)} runs right down the center.`); }
-  const alternating = uniq.length === 2 && ids.every((x, i) => i === 0 || x !== ids[i - 1]);
-  if (alternating) notes.push('The two woods alternate strip by strip, like piano keys.');
-  const counts = uniq.map(id => [id, ids.filter(x => x === id).length]).sort((a, b) => b[1] - a[1]);
-  if (uniq.length > 1 && counts[0][1] >= n / 2 && !alternating) notes.push(`It is mostly ${names(counts[0][0])}, with ${joinList(counts.slice(1).map(c => names(c[0])))} for contrast.`);
-  const ws = uniq.map(woodById).filter(Boolean).sort((a, b) => lum(a.color) - lum(b.color));
-  if (ws.length >= 2 && lum(ws[ws.length - 1].color) - lum(ws[0].color) > 120 && notes.length < 2) notes.push(`Light ${ws[ws.length - 1].name.toLowerCase()} against dark ${ws[0].name.toLowerCase()} gives it bold contrast.`);
-  const key = [...uniq].sort().join('+');
-  const before = S.pieces.filter(q => q.id !== p.id && q.no < p.no && [...new Set(q.woods)].sort().join('+') === key).length;
-  const novelty = before === 0 ? 'It is the first piece from the shop with this combination of woods.' : `It is only the ${ordinal(before + 1)} piece from the shop with this mix of woods.`;
-  return [...notes.slice(0, 2), novelty];
+  if (p.woods.length < 2) return [];
+  if (p.firstCombo === true) return ['It is the first piece from the shop with this combination of woods.'];
+  if (p.firstCombo === false || !historyKnown()) return [];
+  const before = comboBefore(p);
+  return [before === 0 ? 'It is the first piece from the shop with this combination of woods.' : `It is only the ${ordinal(before + 1)} piece from the shop with this mix of woods.`];
 }
 // The board's own sentences: how it's laid out, its size, and its finishing touches
 function boardStory(bd) {
@@ -298,7 +304,7 @@ function genStory(p) {
   if (p.special && p.special.trim()) parts.push(p.special.trim().replace(/([^.!?])$/, '$1.'));
   const hardLine = () => {
     const hardest = [...woods].sort((a, b) => (b.janka || 0) - (a.janka || 0))[0];
-    if (hardest && hardest.janka >= 2500) parts.push(`With a Janka hardness of about ${Number(hardest.janka).toLocaleString('en-US')} pounds-force, the ${lc(hardest.name)} is ${hardest.janka >= 2900 ? 'about twice as hard as hard maple' : 'far harder than hard maple'}, one of the toughest woods there is.`);
+    if (hardest && hardest.janka >= 2500) parts.push(`With a Janka hardness of about ${Number(hardest.janka).toLocaleString('en-US')} pounds-force, the ${lc(hardest.name)} is ${hardest.janka >= 2900 ? 'about twice as hard as hard maple' : 'far harder than hard maple'}.`);
   };
   if (type.bowl && p.bowl) {
     const bw = p.bowl, names = joinList(woods.map(w => lc(w.name)));
@@ -447,11 +453,12 @@ async function gh(path, opt = {}, token = S.settings.gh && S.settings.gh.token) 
 async function storyPageHtml() {
   const logo = await logoDataUrl(); let html = await (await fetch('story.html')).text();
   if (logo) html = html.replace('<head>', `<head><script>window.SHOP_LOGO=${JSON.stringify(logo)}</script>`);
+  html = html.replace('<head>', `<head><script>window.SHOP_EMAIL=${JSON.stringify(S.settings.email || '')}</script>`);
   return html;
 }
 const strHash = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
 const pubHash = p => strHash(JSON.stringify(pagePayload(p)));
-const pageVersion = () => APP_VERSION + ':' + strHash(logoSrc());
+const pageVersion = () => APP_VERSION + ':' + strHash(logoSrc() + '|' + (S.settings.email || ''));
 function newPubId(used) {
   const abc = '23456789abcdefghjkmnpqrstuvwxyz'; let id;
   do { id = Array.from(crypto.getRandomValues(new Uint8Array(5)), b => abc[b % abc.length]).join(''); } while (used.has(id));
@@ -1217,7 +1224,7 @@ function markSoldSheet(p) {
 // Same design, woods and template; new number, no photos, back to Building
 function duplicatePiece(p) {
   const d = clone(p);
-  Object.assign(d, { id: uid(), no: nextNo(), date: today(), status: 'building', photos: [], buildPhotos: [], story: '', storyEdited: false, soldTo: '', soldDate: '', stockUsed: null, cost: '' });
+  Object.assign(d, { id: uid(), no: nextNo(), date: today(), status: 'building', photos: [], buildPhotos: [], story: '', storyEdited: false, soldTo: '', soldDate: '', stockUsed: null, cost: '', firstCombo: undefined });
   if (d.board) d.board.done = [];
   stack.push({ view: 'editPiece', params: {}, draft: d }); render(true); scrollTo(0, 0);
   toast(`Copy of No. ${pad(p.no)}. Change anything, then Save.`);
@@ -1672,6 +1679,7 @@ VIEWS.editPiece = ({ id }, frame) => {
     <div class="tray"><div class="tray-h">About this one</div>
       <label class="f">What's special about it? <span>(optional, goes in the story)</span></label>
       <textarea id="special" style="min-height:70px" placeholder="e.g. The cherry came from my grandpa's tree">${esc(p.special)}</textarea>
+      <button class="swrow" id="firstCombo" style="padding:10px 2px 4px"><div class="grow"><div class="t">First time I've made this combination</div><div class="s">Adds “the first piece from the shop with this combination of woods” to the story</div></div><span class="switch ${comboIsFirst(p) ? 'on' : ''}"><i></i></span></button>
       <label class="f">Finished photos</label><div class="photos" id="photos"></div></div>
     <div class="tray"><div class="tray-h">Details</div>
       <div class="row"><div><label class="f" style="margin-top:0">Number</label><input id="no" inputmode="numeric" value="${p.no}"></div><div><label class="f" style="margin-top:0">Date</label><input id="date" type="date" value="${esc(p.date)}"></div></div>
@@ -1723,6 +1731,7 @@ VIEWS.editPiece = ({ id }, frame) => {
     $('#addPh').onclick = async () => { await addPhotos(p.photos); drawPhotos(); };
   };
   drawPhotos();
+  $('#firstCombo').onclick = () => { const now = !comboIsFirst(p); p.firstCombo = now; $('#firstCombo .switch').classList.toggle('on', now); };
   $$('[data-s]', v).forEach(b => b.onclick = () => { p.status = b.dataset.s; $$('[data-s]', v).forEach(x => x.classList.toggle('on', x === b)); });
   $('#saveP').onclick = () => {
     readFields();
@@ -2169,6 +2178,7 @@ VIEWS.settings = () => {
     <label class="f" style="margin-top:0">Your name <span>(signs each story)</span></label><input id="maker" value="${esc(st.maker)}">
     <label class="f">Shop name <span>(optional)</span></label><input id="shop" value="${esc(st.shop)}" placeholder="Leave blank to use your name">
     <label class="f">Email <span>(printed on cards)</span></label><input id="email" type="email" inputmode="email" value="${esc(st.email || '')}" placeholder="you@example.com">
+    <p class="note" style="margin:-4px 0 10px">Starting at a higher number is fine, like 25. Pieces made before Bench aren't counted, so a story only says "the first piece with this combination" when you turn that on for the piece.</p>
     <div class="row"><div><label class="f">Next piece number</label><input id="nextNo" inputmode="numeric" value="${st.nextNumber}"></div><div><label class="f">Default finish</label><select id="dfin">${S.finishes.map(f => `<option ${f.name === st.defaultFinish ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></div></div>
     <label class="f">End of every listing</label><textarea id="lend" style="min-height:70px">${esc(st.listingEnd)}</textarea></div>
     <div class="tray"><div class="tray-h">Story page for QR codes</div>

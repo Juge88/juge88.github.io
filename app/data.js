@@ -204,7 +204,7 @@ const DEFAULT_GROUPS = [
 ];
 
 // Older default texts, so saved copies can be updated to the new wording.
-const OLD_DEFAULTS = { knifeCare: 'Hand wash with warm soapy water and dry it right away. Never put it in the dishwasher or leave it soaking. Wipe the blade and screws dry so the steel stays rust-free. When the wood looks pale or dry, rub in a little board butter or food-safe oil.', knifeBuild: 'Its strips were ripped, flattened and glued into one blank, then the handle and arm were cut from it so the lamination runs straight through the whole bow. It is fitted with a fresh bread blade, set just a hair long so the bow holds it tight.' };
+const OLD_DEFAULTS = { kitchenBuild: 'Its handle and head were cut from the same laminated blank and joined with a dovetail, then shaped and sanded by hand.', knifeCare: 'Hand wash with warm soapy water and dry it right away. Never put it in the dishwasher or leave it soaking. Wipe the blade and screws dry so the steel stays rust-free. When the wood looks pale or dry, rub in a little board butter or food-safe oil.', knifeBuild: 'Its strips were ripped, flattened and glued into one blank, then the handle and arm were cut from it so the lamination runs straight through the whole bow. It is fitted with a fresh bread blade, set just a hair long so the bow holds it tight.' };
 
 const CARE = {
   knife: 'Hand wash with warm soapy water and dry it right away. Never put it in the dishwasher or leave it soaking. The blade is stainless steel, but towel it and the screws dry anyway so water never sits against the wood. When the wood looks pale or dry, rub in a little board butter or food-safe oil.',
@@ -243,7 +243,7 @@ const DEFAULT_TYPES = [
     care: CARE.knife },
   { id: 'kitchen', name: 'Kitchen tool', noun: 'tool', byKind: true,
     slots: [{ name: 'Handle', group: 'kitchen-handle' }, { name: 'Head', group: 'kitchen-head' }], join: 'dovetail',
-    build: 'Its handle and head were cut from the same laminated blank and joined with a dovetail, then shaped and sanded by hand.',
+    build: 'Its handle and head were cut from the same laminated blank, then shaped and sanded by hand.',
     care: CARE.spoon },
   { id: 'board', name: 'Cutting board', noun: 'board', slots: [], join: 'none', board: true,
     build: 'Every strip and block was cut, arranged and glued by hand, then flattened and sanded smooth.',
@@ -289,26 +289,39 @@ const PHRASES = {
     'No. {no} came off the bench {by}{when}. Like every piece here, it is numbered and one of a kind.',
     'Meet No. {no}, a {noun} made {by}{when}. No other piece will ever have this exact grain.',
     'This is No. {no}. It was made {by}{when}, start to finish, and it is the only one like it.',
-    'No. {no} is a {noun} made {by}{when}, numbered and logged so its story stays with it.'
+    'No. {no} is a {noun} made {by}{when}, numbered and logged so its story stays with it.',
+    'Say hello to No. {no}, a {noun} made {by}{when}. Wood never repeats itself, so neither do these.',
+    'Fresh off the bench {by}{when}: No. {no}, a {noun}. This grain will never show up again.',
+    'No. {no} started as a pile of boards and ended up as this {noun}, made {by}{when}.',
+    'This {noun} is No. {no}, made {by}{when}. Nobody else has one quite like it.'
   ],
   strips: [
     'It is laminated from {n} strips of {woods}.',
     'Its blank was glued up from {n} strips: {woods}.',
     '{n} strips went into this one, {woods}.',
-    'It is built from {n} laminated strips of {woods}.'
+    'It is built from {n} laminated strips of {woods}.',
+    'The pattern comes from {n} strips: {woods}.',
+    'It starts with {n} strips of {woods}, glued up side by side.'
   ],
   solid: [
     'It is made from solid {wood}.',
     'It is cut from a single piece of {wood}.',
-    'It is solid {wood}, all the way through.'
+    'It is solid {wood}, all the way through.',
+    'It is one solid piece of {wood}, nothing added.'
   ],
-  woodIntro: ['', 'About the {wood}: ', 'A little about the {wood}: '],
+  woodIntro: ['', '', '', 'About the {wood}: '],
   closing: [
     'Thank you for supporting a small shop.',
     'Thank you for bringing it home.',
     'Thanks for giving it a place in your kitchen.',
-    'Thank you for choosing something made by hand.'
+    'Thank you for choosing something made by hand.',
+    'Use it often. It only looks better with age.',
+    'Thanks for giving it a good home.'
   ]
+};
+// Wording from earlier versions. QR tags already printed point at these, so they stay known to the story page.
+const PHRASES_LEGACY = {
+  woodIntro: ['About the {wood}: ', 'A little about the {wood}: ']
 };
 
 /* ---------- QR text packing ---------- */
@@ -324,6 +337,7 @@ function buildStoryDict() {
     ...DEFAULT_FINISHES.map(f => f.story),
     ...(typeof BUILTIN_TEMPLATES !== 'undefined' ? BUILTIN_TEMPLATES.map(t => t.inspiration) : []),
     ...Object.values(PHRASES).flat().flatMap(frag),
+    ...Object.values(PHRASES_LEGACY).flat().flatMap(frag),
     ...(typeof STORY_EXTRA !== 'undefined' ? STORY_EXTRA : [])
   ].filter(Boolean);
   const map = new Map();

@@ -29,6 +29,8 @@
   .story p { margin: 0 0 1.1em; }
   .story p.care { font: 16px/1.6 system-ui, sans-serif; color: #4a3b30; background: #f3ebe0; border-radius: 12px; padding: 14px 16px; }
   .story p.sign { font-style: italic; }
+  .ask { margin-top: 28px; text-align: center; }
+  .ask a { display: inline-block; padding: 13px 24px; border-radius: 999px; background: var(--accent); color: var(--paper); font: 600 16px system-ui, sans-serif; text-decoration: none; }
   .foot { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--dim); font: 14px system-ui, sans-serif; text-align: center; }
   .art { margin: 26px -6px 0; padding: 22px 10px; border-radius: 22px; background: radial-gradient(130% 100% at 50% 0%, #2b2b30, #1a1a1d 70%); }
   .art svg { display: block; width: 100%; height: auto; max-height: 340px; }
@@ -1564,7 +1566,7 @@ const DEFAULT_GROUPS = [
 ];
 
 // Older default texts, so saved copies can be updated to the new wording.
-const OLD_DEFAULTS = { knifeCare: 'Hand wash with warm soapy water and dry it right away. Never put it in the dishwasher or leave it soaking. Wipe the blade and screws dry so the steel stays rust-free. When the wood looks pale or dry, rub in a little board butter or food-safe oil.', knifeBuild: 'Its strips were ripped, flattened and glued into one blank, then the handle and arm were cut from it so the lamination runs straight through the whole bow. It is fitted with a fresh bread blade, set just a hair long so the bow holds it tight.' };
+const OLD_DEFAULTS = { kitchenBuild: 'Its handle and head were cut from the same laminated blank and joined with a dovetail, then shaped and sanded by hand.', knifeCare: 'Hand wash with warm soapy water and dry it right away. Never put it in the dishwasher or leave it soaking. Wipe the blade and screws dry so the steel stays rust-free. When the wood looks pale or dry, rub in a little board butter or food-safe oil.', knifeBuild: 'Its strips were ripped, flattened and glued into one blank, then the handle and arm were cut from it so the lamination runs straight through the whole bow. It is fitted with a fresh bread blade, set just a hair long so the bow holds it tight.' };
 
 const CARE = {
   knife: 'Hand wash with warm soapy water and dry it right away. Never put it in the dishwasher or leave it soaking. The blade is stainless steel, but towel it and the screws dry anyway so water never sits against the wood. When the wood looks pale or dry, rub in a little board butter or food-safe oil.',
@@ -1603,7 +1605,7 @@ const DEFAULT_TYPES = [
     care: CARE.knife },
   { id: 'kitchen', name: 'Kitchen tool', noun: 'tool', byKind: true,
     slots: [{ name: 'Handle', group: 'kitchen-handle' }, { name: 'Head', group: 'kitchen-head' }], join: 'dovetail',
-    build: 'Its handle and head were cut from the same laminated blank and joined with a dovetail, then shaped and sanded by hand.',
+    build: 'Its handle and head were cut from the same laminated blank, then shaped and sanded by hand.',
     care: CARE.spoon },
   { id: 'board', name: 'Cutting board', noun: 'board', slots: [], join: 'none', board: true,
     build: 'Every strip and block was cut, arranged and glued by hand, then flattened and sanded smooth.',
@@ -1649,26 +1651,39 @@ const PHRASES = {
     'No. {no} came off the bench {by}{when}. Like every piece here, it is numbered and one of a kind.',
     'Meet No. {no}, a {noun} made {by}{when}. No other piece will ever have this exact grain.',
     'This is No. {no}. It was made {by}{when}, start to finish, and it is the only one like it.',
-    'No. {no} is a {noun} made {by}{when}, numbered and logged so its story stays with it.'
+    'No. {no} is a {noun} made {by}{when}, numbered and logged so its story stays with it.',
+    'Say hello to No. {no}, a {noun} made {by}{when}. Wood never repeats itself, so neither do these.',
+    'Fresh off the bench {by}{when}: No. {no}, a {noun}. This grain will never show up again.',
+    'No. {no} started as a pile of boards and ended up as this {noun}, made {by}{when}.',
+    'This {noun} is No. {no}, made {by}{when}. Nobody else has one quite like it.'
   ],
   strips: [
     'It is laminated from {n} strips of {woods}.',
     'Its blank was glued up from {n} strips: {woods}.',
     '{n} strips went into this one, {woods}.',
-    'It is built from {n} laminated strips of {woods}.'
+    'It is built from {n} laminated strips of {woods}.',
+    'The pattern comes from {n} strips: {woods}.',
+    'It starts with {n} strips of {woods}, glued up side by side.'
   ],
   solid: [
     'It is made from solid {wood}.',
     'It is cut from a single piece of {wood}.',
-    'It is solid {wood}, all the way through.'
+    'It is solid {wood}, all the way through.',
+    'It is one solid piece of {wood}, nothing added.'
   ],
-  woodIntro: ['', 'About the {wood}: ', 'A little about the {wood}: '],
+  woodIntro: ['', '', '', 'About the {wood}: '],
   closing: [
     'Thank you for supporting a small shop.',
     'Thank you for bringing it home.',
     'Thanks for giving it a place in your kitchen.',
-    'Thank you for choosing something made by hand.'
+    'Thank you for choosing something made by hand.',
+    'Use it often. It only looks better with age.',
+    'Thanks for giving it a good home.'
   ]
+};
+// Wording from earlier versions. QR tags already printed point at these, so they stay known to the story page.
+const PHRASES_LEGACY = {
+  woodIntro: ['About the {wood}: ', 'A little about the {wood}: ']
 };
 
 /* ---------- QR text packing ---------- */
@@ -1684,6 +1699,7 @@ function buildStoryDict() {
     ...DEFAULT_FINISHES.map(f => f.story),
     ...(typeof BUILTIN_TEMPLATES !== 'undefined' ? BUILTIN_TEMPLATES.map(t => t.inspiration) : []),
     ...Object.values(PHRASES).flat().flatMap(frag),
+    ...Object.values(PHRASES_LEGACY).flat().flatMap(frag),
     ...(typeof STORY_EXTRA !== 'undefined' ? STORY_EXTRA : [])
   ].filter(Boolean);
   const map = new Map();
@@ -1725,6 +1741,9 @@ function unpackStory(s) { STORY_DICT ||= buildStoryDict(); return String(s).repl
     const no = String(d.n).padStart(3, '0');
     let logo = window.SHOP_LOGO || '';
     if (!logo) try { const st = JSON.parse(localStorage.getItem('bench.v1') || '{}').settings || {}; logo = st.logo === undefined ? 'logo.png' : st.logo || ''; if (logo && !logo.startsWith('data:') && !/bench\.local|localhost/.test(location.host)) logo = ''; } catch (e) {}
+    let mail = window.SHOP_EMAIL;
+    if (mail === undefined) try { mail = JSON.parse(localStorage.getItem('bench.v1') || '{}').settings?.email || ''; } catch (e) { mail = ''; }
+    const ask = mail && /^[^\s@]+@[^\s@]+$/.test(mail) ? `<div class="ask"><a href="mailto:${esc(mail)}?subject=${encodeURIComponent(`${d.t} No. ${no}`)}&body=${encodeURIComponent(`Hi, I have a question about ${d.t} No. ${no}.\n\n`)}">Questions, or want one made for you?</a></div>` : '';
     document.title = `${d.t} No. ${no}`;
     const ws = (d.w || []).map(w => { if (typeof w !== 'string') return w; const l = WOOD_LIBRARY.find(x => x[0] === w); return l ? [l[1], l[2], l[3], l[0]] : [w, '#c9a57a', '#c9a57a']; });
     document.getElementById('band').innerHTML = ws.map((w, i) => `<i style="background:${esc(w[1])};flex:${d.sw ? +d.sw[i] || 1 : 1}"></i>`).join('');
@@ -1758,6 +1777,7 @@ function unpackStory(s) { STORY_DICT ||= buildStoryDict(); return String(s).repl
         <div class="strip">${ws.map((w, i) => `<i style="background:${esc(w[1])};flex:${d.sw ? +d.sw[i] || 1 : 1}" title="${esc(w[0])}"></i>`).join('')}</div>
         <div class="legend">${uniq.map(w => `<span><b style="background:${esc(w[1])}"></b>${esc(w[0])}</span>`).join('')}</div></div>` : ''}
       <div class="story">${paras}</div>
+      ${ask}
       <div class="foot">No. ${no} · one of a kind</div>`;
   } catch (e) {
     m.innerHTML = e.message === 'soon' ? '<div class="err">This story is on its way. Give it a minute and scan again.</div>' : '<div class="err">This link is missing its details. Try scanning the tag again.</div>';
