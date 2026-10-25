@@ -108,6 +108,7 @@ async function syPut(sha) {
 
 async function syPhotos() {
   const ids = new Set(); S.pieces.forEach(p => { (p.photos || []).forEach(i => ids.add(i)); (p.buildPhotos || []).forEach(b => ids.add(b.id)); });
+  (S.projects || []).forEach(q => (q.photos || []).forEach(i => ids.add(i)));
   if (!ids.size) return false;
   const remote = new Set();
   try { (await gh(`${syRepo()}/contents/photos`)).forEach(f => remote.add(f.name)); } catch (e) { if (e.status !== 404) throw e; }

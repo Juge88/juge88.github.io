@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.7.5';
+const APP_VERSION = '1.8.0';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -29,6 +29,7 @@ function load() {
   S.woodEdits ??= {};
   S.kinds ??= structuredClone(DEFAULT_KINDS);
   S.stock ??= {};
+  S.projects ??= [];
   migrate();
 }
 function migrate() {
@@ -166,7 +167,10 @@ const groupById = id => S.groups.find(g => g.id === id) || { id, name: id, prefi
 const kindById = id => S.kinds.find(k => k.id === id);
 const finishByName = n => S.finishes.find(f => f.name === n);
 // widths (inches, one per strip) make strips their real thickness; without them strips share the blank evenly
-const colorsOf = (ids, widths) => { const ws = (ids && ids.length ? ids : ['maple']).map((id, i) => { const w = woodById(id); return w && widths && widths[i] > 0 ? { ...w, w: widths[i] } : w; }).filter(Boolean); return ws.length ? ws : [{ color: '#c9a57a', color2: '#d4b088' }]; };
+const colorsOf = (ids, widths, cols) => { const ws = (ids && ids.length ? ids : ['maple']).map((id, i) => { const w = woodById(id); let o = w && widths && widths[i] > 0 ? { ...w, w: widths[i] } : w; if (o && cols && cols[i]) o = { ...o, color: cols[i][0], color2: cols[i][1] || cols[i][0] }; return o; }).filter(Boolean); return ws.length ? ws : [{ color: '#c9a57a', color2: '#d4b088' }]; };
+// Colors taken from a photo of the real piece. They only count while the strips are still the ones that photo made.
+const colsValid = p => p.cols && p.cols.length === p.woods.length && p.colsSig === p.woods.join(',');
+const colsOf = p => colorsOf(p.woods, stripW(p), colsValid(p) ? p.cols : null);
 const stripW = p => p.widths && p.widths.length === p.woods.length ? p.widths : null;
 const pieceTpls = p => typeById(p.type).slots.map(s => tplById((p.templates || {})[s.name])).filter(Boolean);
 
@@ -238,13 +242,13 @@ function pieceArt(p, mode = 'finished') {
   if (t.bowl) return p.bowl ? B.side(p.bowl, woodById) : '';
   if (t.board) return p.board ? BD.draw(p.board, woodById, seedOf(p)) : '';
   const ts = pieceTpls(p); if (!ts.length) return '';
-  return D.piece(D.assemble(ts), colorsOf(p.woods, stripW(p)), mode, p.angle || 0);
+  return D.piece(D.assemble(ts), colsOf(p), mode, p.angle || 0);
 }
 // A part you print (not cut from wood) is drawn as solid plastic in its filament color
 // Every template is a 3D print unless you switch it to wood. wood = true draws it in the piece's woods instead (used while building a piece).
 const FIL_DEFAULT = '#00ae42';
 const FILAMENTS = [['#00ae42', 'Bambu Green'], ['#3d4147', 'Black'], ['#8e9399', 'Gray'], ['#e8e4dc', 'White'], ['#223626', 'Dark green'], ['#c8643c', 'Orange'], ['#2f5f8a', 'Blue'], ['#a8322d', 'Red'], ['#d8b43c', 'Yellow']];
-const tplArt = (t, ids, widths, wood) => t && t.print !== false && !wood ? D.single(t, [{ color: t.printColor || FIL_DEFAULT, print: true }]) : D.single(t, colorsOf(ids, widths));
+const tplArt = (t, ids, widths, wood, cols) => t && t.print !== false && !wood ? D.single(t, [{ color: t.printColor || FIL_DEFAULT, print: true }]) : D.single(t, colorsOf(ids, widths, cols));
 const stripHTML = (ids, widths) => `<div class="strip">${colorsOf(ids, widths).map(w => `<i style="background:${w.color};flex:${w.w || 1}"></i>`).join('')}</div>`;
 function seedOf(p) { let h = 2166136261; for (const c of String(p.id) + p.no) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h; }
 
@@ -396,7 +400,7 @@ function pagePayload(p) {
   const t = typeById(p.type), st = S.settings, ts = pieceTpls(p);
   const o = {
     v: 2, n: p.no, t: typeName(p),
-    w: p.woods.map(id => { const w = woodById(id); if (!w) return null; return LIB.some(l => l.id === id) && !S.woodEdits[id] ? id : [w.name, w.color, w.color2 || w.color]; }).filter(Boolean),
+    w: p.woods.map((id, i) => { const w = woodById(id); if (!w) return null; if (colsValid(p)) return [w.name, p.cols[i][0], p.cols[i][1] || p.cols[i][0]]; return LIB.some(l => l.id === id) && !S.woodEdits[id] ? id : [w.name, w.color, w.color2 || w.color]; }).filter(Boolean),
     d: p.date ? monthYear(p.date) : '', f: p.finish === 'Unfinished' ? '' : (p.finish || ''),
     m: st.maker || '', sh: st.shop || '', s: packStory(storyOf(p))
   };
@@ -673,7 +677,7 @@ function tagCanvas(p, url, logo) {
   const st = S.settings, W = 1000, H = 1300, c = document.createElement('canvas'); c.width = W; c.height = H;
   const g = c.getContext('2d');
   g.fillStyle = '#fbf7f1'; g.fillRect(0, 0, W, H);
-  const ws = colorsOf(p.woods, stripW(p)), tot = ws.reduce((a, w) => a + (w.w || 1), 0); let x0 = 0;
+  const ws = colsOf(p), tot = ws.reduce((a, w) => a + (w.w || 1), 0); let x0 = 0;
   ws.forEach(w => { const bw = W * (w.w || 1) / tot; g.fillStyle = w.color; g.fillRect(x0, 0, bw + 1, 46); x0 += bw; });
   g.fillStyle = '#1d1611'; g.textAlign = 'center';
   g.font = '600 46px Fraunces, "Noto Serif", Georgia, serif'; g.fillText(st.shop || (st.maker ? `Made by ${st.maker}` : 'Handmade'), W / 2, 140);
@@ -897,7 +901,7 @@ function open3D(p) {
     return V3.open(() => { const g = B.mesh3d(p.bowl, woodById); const size = new THREE.Box3().setFromObject(g).getSize(new THREE.Vector3()); return { group: g, size }; }, null, title);
   }
   if (t.board) { if (!p.board) return; return V3.open(() => V3.board(p.board, woodById, seedOf(p)), null, title, { rotX: .62, rotY: -.45 }); }
-  const ts = pieceTpls(p); if (!ts.length) return toast('Pick the parts first'); V3.open(D.assemble(ts), colorsOf(p.woods, stripW(p)), title, { angle: p.angle || 0 });
+  const ts = pieceTpls(p); if (!ts.length) return toast('Pick the parts first'); V3.open(D.assemble(ts), colsOf(p), title, { angle: p.angle || 0 });
 }
 function bindMode(root, redraw, id = 'mode', piece = null) {
   $$(`#${id} [data-m]`, root).forEach(b => b.onclick = () => {
@@ -1052,9 +1056,9 @@ function nearestWood(lab, pool) {
 }
 async function scanPhoto(list, widths, done) {
   const [f] = await pickFiles('image/*'); if (!f) return;
-  let img; try { img = await loadImg(await resizePhoto(f, 1000)); } catch (e) {} if (!img) return toast('Could not read that photo');
+  let img, photoUrl; try { photoUrl = await resizePhoto(f, 1000); img = await loadImg(photoUrl); } catch (e) {} if (!img) return toast('Could not read that photo');
   const pool = shopWoods().length >= 2 ? shopWoods() : allWoods();
-  let line = null, sens = 12, segs = [], ids = [];
+  let line = null, sens = 12, segs = [], ids = [], useColors = true;
   openSheet(`<div class="kp-title"><h2>Build from a photo</h2></div>
     <p class="small muted" style="margin:0 0 8px">Drag a line across the strips, from one edge of the knife to the other. Keep the line inside the wood.</p>
     <canvas id="scCv" class="sc-cv"></canvas>
@@ -1075,17 +1079,21 @@ async function scanPhoto(list, widths, done) {
     const opts = id => pool.concat(woodById(id) && !pool.some(w => w.id === id) ? [woodById(id)] : []).map(w => `<option value="${esc(w.id)}" ${w.id === id ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
     el.innerHTML = `<div class="strip sc-strip">${segs.map((sg, i) => `<i style="background:${woodById(ids[i]).color};flex:${sg.f}"></i>`).join('')}</div>
       <div class="lk-bar"><span class="small muted">${segs.length} strips found</span><span><button class="btn small" id="scLess">Fewer</button> <button class="btn small" id="scMore">More</button></span></div>
+      <button class="swrow" id="scCol" style="padding:6px 2px"><div class="grow"><div class="t">Draw it in the colors from the photo</div><div class="s">So it looks like the real one. The wood names are for the story.</div></div><span class="switch ${useColors ? 'on' : ''}"><i></i></span></button>
       <div class="card flush">${segs.map((sg, i) => `<div class="strow"><div class="who" style="padding-left:8px"><span class="sc-dot"></span><div class="grow"><div class="t">${i + 1}.</div></div></div><select data-sc="${i}">${opts(ids[i])}</select></div>`).join('')}</div>
       <div class="kp-go"><button class="btn" id="scAgain">Draw again</button><button class="btn primary" id="scOk">Use these</button></div>`;
     $$('.sc-dot', el).forEach((d, i) => { const c = segs[i].lab; d.style.background = `rgb(${labToRgb(c).join(',')})`; });
     $$('[data-sc]', el).forEach(s => s.onchange = () => { ids[+s.dataset.sc] = s.value; $('.sc-strip', el).children[+s.dataset.sc].style.background = woodById(s.value).color; });
+    $('#scCol').onclick = () => { useColors = !useColors; $('#scCol .switch').classList.toggle('on', useColors); };
     $('#scLess').onclick = () => { sens = Math.min(60, sens * 1.35); results(); };
     $('#scMore').onclick = () => { sens = Math.max(3, sens / 1.35); results(); };
     $('#scAgain').onclick = () => { line = null; draw(); results(); };
     $('#scOk').onclick = () => {
       if (ids.length > 40) return toast('That is more than 40 strips. Tap Fewer.');
       const T = total(), ws = segs.map(sg => Math.max(1 / 32, Math.round(sg.f * T * 32) / 32));
-      list.splice(0, list.length, ...ids); widths.splice(0, widths.length, ...ws); closeSheet(); done(); toast('Strips set. Fix any that look off.');
+      const hex = q => '#' + q.map(x => x.toString(16).padStart(2, '0')).join(''), lift = q => q.map(x => Math.round(x + (255 - x) * .1));
+      const cols = useColors ? segs.map(sg => { const q = labToRgb(sg.lab); return [hex(q), hex(lift(q))]; }) : null;
+      list.splice(0, list.length, ...ids); widths.splice(0, widths.length, ...ws); closeSheet(); done(cols, photoUrl); toast('Strips set. Fix any that look off.');
     };
   };
   let drag = false;
@@ -1150,7 +1158,7 @@ function matchLook(list, widths, art, done) {
 
 /* ---------- Wood checklist ---------- */
 // widths (optional): one thickness per strip, kept in step as strips are added, removed and reordered
-function woodPicker(el, list, onChange, widths, art) {
+function woodPicker(el, list, onChange, widths, art, onCols) {
   const W = Array.isArray(widths);
   if (W) { while (widths.length < list.length) widths.push(widths[widths.length - 1] || .75); widths.length = list.length; }
   const add = id => { list.push(id); if (W) widths.push(widths[widths.length - 1] || .75); onChange(list); draw(); };
@@ -1175,7 +1183,7 @@ function woodPicker(el, list, onChange, widths, art) {
     $('#otherWood', el).onclick = () => woodSearchSheet(add);
     $$('.o', el).forEach(dragChip);
     $$('[data-sww]', el).forEach(b => b.onclick = () => { const i = +b.dataset.sww; measure({ title: `Strip ${i + 1}: ${woodName(list[i])}`, value: widths[i], min: 1 / 32, max: 6, quick: [.125, .25, .375, .5, .625, .75, 1], onSet: v => { widths[i] = v; onChange(list); draw(); } }); });
-    $('#swPhoto', el)?.addEventListener('click', () => scanPhoto(list, widths, () => { onChange(list); draw(); }));
+    $('#swPhoto', el)?.addEventListener('click', () => scanPhoto(list, widths, (cols, url) => { onCols?.(cols, url); onChange(list); draw(); }));
     $('#swLook', el)?.addEventListener('click', () => matchLook(list, widths, art, () => { onChange(list); draw(); }));
     $('#swSame', el)?.addEventListener('click', () => measure({ title: 'Every strip', value: widths[0], min: 1 / 32, max: 6, quick: [.25, .375, .5, .625, .75, 1], onSet: v => { widths.fill(v); onChange(list); draw(); } }));
   }
@@ -1263,7 +1271,7 @@ function pieceCard(p) {
     <div class="meta"><div class="row" style="gap:8px"><div class="no">No. ${pad(p.no)}</div>${price ? `<div class="no" style="flex:none;color:var(--text)">${price}</div>` : ''}</div>
       <div class="nm">${esc(typeName(p))}</div>
       <div class="lc">${squiggle(stageOf(p), { w: 64, sw: 3.5, amp: 2.2, wl: 16 })}${statusChip(p.status)}</div>
-      ${p.woods.length ? `<div class="woodline">${colorsOf(p.woods, stripW(p)).map(w => `<i style="background:${w.color};flex:${w.w || 1}"></i>`).join('')}</div>` : ''}</div></button>`;
+      ${p.woods.length ? `<div class="woodline">${colsOf(p).map(w => `<i style="background:${w.color};flex:${w.w || 1}"></i>`).join('')}</div>` : ''}</div></button>`;
 }
 
 VIEWS.pieces = () => {
@@ -1858,7 +1866,7 @@ VIEWS.editPiece = ({ id }, frame) => {
   $('#slots').innerHTML = type.slots.map((s, si) => {
     const tpls = allTemplates().filter(t => t.group === s.group);
     return `<label class="f">${esc(s.name)}</label><div class="filters" data-slot="${si}">${tpls.map(t => `<button class="tpl ${p.templates[s.name] === t.id ? 'sel' : ''}" data-tp="${t.id}">
-        <div class="pv" style="height:70px">${tplArt(t, p.woods, p.widths, true)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || '<span class="muted small">No templates here yet. Add them in Catalog.</span>'}</div>`;
+        <div class="pv" style="height:70px">${tplArt(t, p.woods, p.widths, true, colsValid(p) ? p.cols : null)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || '<span class="muted small">No templates here yet. Add them in Catalog.</span>'}</div>`;
   }).join('');
   $$('[data-slot]', v).forEach(row => {
     const s = type.slots[+row.dataset.slot];
@@ -1870,7 +1878,7 @@ VIEWS.editPiece = ({ id }, frame) => {
   if (type.board) boardEditor($('#boardEd'), p, () => { p.woods = BD.woods(p.board); drawPreview(); });
   if (type.bowl) bowlEditor($('#bowlEd'), p, () => { p.woods = bowlWoods(p.bowl); drawPreview(); });
   drawPreview();
-  if (!type.bowl && !type.board) { p.widths ||= []; woodPicker($('#woods'), p.woods, () => { drawPreview(); $$('#slots .tpl').forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), p.woods, p.widths, true); }); }, p.widths, () => pieceArt(p)); }
+  if (!type.bowl && !type.board) { p.widths ||= []; woodPicker($('#woods'), p.woods, () => { drawPreview(); $$('#slots .tpl').forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), p.woods, p.widths, true, colsValid(p) ? p.cols : null); }); }, p.widths, () => pieceArt(p), (cols, url) => { if (cols) { p.cols = cols; p.colsSig = p.woods.join(','); } else { delete p.cols; delete p.colsSig; } if (url) { const id = uid(); photoPut(id, url).then(() => { p.photos.push(id); drawPhotos(); }); } }); }
   const drawPhotos = () => {
     $('#photos').innerHTML = p.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" alt=""><button data-rmp="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="addPh" aria-label="Add photos">+</button>`;
     fillPhotos($('#photos'));
@@ -1907,6 +1915,52 @@ VIEWS.editPiece = ({ id }, frame) => {
 
 /* ---------- Catalog ---------- */
 let catGroup = null, catPrinted = 'all';
+/* ---------- Gallery ---------- */
+let galFilter = 'all', galMode = 'photos';
+const projTitle = q => q.title || 'Untitled';
+VIEWS.gallery = () => {
+  setTop('Gallery');
+  S.projects = (S.projects || []).filter(q => q.title || q.notes || (q.photos || []).length);
+  const v = $('#view');
+  const items = [...(galFilter === 'other' ? [] : S.pieces.map(p => ({ k: 'piece', p, d: p.date || '', t: `${typeName(p)} No. ${pad(p.no)}` }))), ...(galFilter === 'pieces' ? [] : S.projects.map(q => ({ k: 'proj', q, d: q.date || '', t: projTitle(q) })))]
+    .sort((a, b) => (b.d || '').localeCompare(a.d || '') || (b.p?.no || 0) - (a.p?.no || 0));
+  v.innerHTML = `<div class="filters">${[['all', 'Everything'], ['pieces', 'Knives and boards'], ['other', 'Other projects']].map(([k, l]) => `<button data-f="${k}" class="${galFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    ${galFilter !== 'other' && S.pieces.length ? `<div class="seg" id="galMode" style="margin:2px 0 12px"><button data-gm="photos" class="${galMode === 'photos' ? 'on' : ''}">My photos</button><button data-gm="renders" class="${galMode === 'renders' ? 'on' : ''}">Renders</button></div>` : ''}
+    <div class="ggrid">${items.map((it, i) => {
+      let img = '';
+      if (it.k === 'piece') { const art = pieceArt(it.p), ph = it.p.photos?.[0]; img = galMode === 'renders' && art || !ph ? (art || '') : `<img data-photo="${ph}" alt="">`; }
+      else img = it.q.photos?.length ? `<img data-photo="${it.q.photos[0]}" alt="">` : `<span class="muted">No photo yet</span>`;
+      return `<button class="gtile" data-i="${i}"><div class="gimg">${img}</div><div class="gcap"><b>${esc(it.t)}</b><span>${it.k === 'piece' ? esc(woodsLine(it.p)) : esc(it.q.date ? monthYear(it.q.date) : '')}</span></div></button>`;
+    }).join('') || `<p class="muted" style="grid-column:1/-1;text-align:center;margin-top:30px">${galFilter === 'pieces' ? 'No pieces yet.' : 'Nothing here yet. Tap + to add a project and its photos.'}</p>`}</div><div style="height:80px"></div>`;
+  $$('[data-f]', v).forEach(b => b.onclick = () => { galFilter = b.dataset.f; render(); });
+  $$('[data-gm]', v).forEach(b => b.onclick = () => { galMode = b.dataset.gm; render(); });
+  $$('.gtile', v).forEach(b => b.onclick = () => { const it = items[+b.dataset.i]; go(it.k === 'piece' ? 'piece' : 'project', { id: (it.p || it.q).id }); });
+  fillPhotos(v);
+  fab(() => { const q = { id: uid(), title: '', date: today(), notes: '', photos: [] }; S.projects.push(q); save(); go('project', { id: q.id }); }, 'Add a project', true);
+};
+const woodsLine = p => [...new Set(p.woods.map(i => woodById(i)?.name).filter(Boolean))].slice(0, 3).join(', ');
+VIEWS.project = ({ id }) => {
+  const q = (S.projects || []).find(x => x.id === id); if (!q) return back();
+  setTop(projTitle(q), `<button class="icon" id="delProj" aria-label="Delete">${ICON.trash}</button>`);
+  const v = $('#view');
+  v.innerHTML = `<div class="tray"><label class="f" style="margin-top:0">What is it?</label><input id="pjT" value="${esc(q.title)}" placeholder="Wood radio, kid's stool…" autocomplete="off">
+    <label class="f">Date</label><input id="pjD" type="date" value="${esc(q.date || '')}">
+    <label class="f">Notes <span>(optional)</span></label><textarea id="pjN" style="min-height:90px" placeholder="Woods, how it went, who it's for">${esc(q.notes || '')}</textarea></div>
+    <div class="sec">Photos</div><div class="photos" id="pjP"></div><div style="height:40px"></div>`;
+  const photos = () => {
+    $('#pjP').innerHTML = q.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" data-big="${ph}" alt=""><button data-rm="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="pjAdd" aria-label="Add photos">+</button>`;
+    fillPhotos($('#pjP'));
+    $$('[data-rm]', v).forEach(b => b.onclick = e => { e.stopPropagation(); photoDel(q.photos[+b.dataset.rm]); q.photos.splice(+b.dataset.rm, 1); save(); photos(); });
+    $$('img[data-big]', v).forEach(im => im.onclick = () => { openSheet(`<img data-photo="${im.dataset.big}" alt="" style="width:100%;border-radius:12px;display:block">`); fillPhotos($('#sheetCard')); });
+    $('#pjAdd').onclick = async () => { await addPhotos(q.photos); save(); photos(); };
+  };
+  photos();
+  $('#pjT').oninput = () => { q.title = $('#pjT').value.trim(); $('#title').textContent = projTitle(q); save(); };
+  $('#pjD').onchange = () => { q.date = $('#pjD').value; save(); };
+  $('#pjN').oninput = () => { q.notes = $('#pjN').value; save(); };
+  $('#delProj').onclick = () => confirmSheet(`Delete ${projTitle(q)}?`, 'Delete', () => { q.photos.forEach(photoDel); S.projects = S.projects.filter(x => x !== q); save(); back(); });
+};
+
 VIEWS.catalog = () => {
   setTop('Catalog', `<button class="icon" id="addTpl" aria-label="Add templates">${ICON.plus}</button>`);
   const v = $('#view');
