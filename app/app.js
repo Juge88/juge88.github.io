@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.7.3';
+const APP_VERSION = '1.7.5';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -241,7 +241,10 @@ function pieceArt(p, mode = 'finished') {
   return D.piece(D.assemble(ts), colorsOf(p.woods, stripW(p)), mode, p.angle || 0);
 }
 // A part you print (not cut from wood) is drawn as solid plastic in its filament color
-const tplArt = (t, ids, widths) => t && t.print ? D.single(t, [{ color: t.printColor || '#3d4147', print: true }]) : D.single(t, colorsOf(ids, widths));
+// Every template is a 3D print unless you switch it to wood. wood = true draws it in the piece's woods instead (used while building a piece).
+const FIL_DEFAULT = '#00ae42';
+const FILAMENTS = [['#00ae42', 'Bambu Green'], ['#3d4147', 'Black'], ['#8e9399', 'Gray'], ['#e8e4dc', 'White'], ['#223626', 'Dark green'], ['#c8643c', 'Orange'], ['#2f5f8a', 'Blue'], ['#a8322d', 'Red'], ['#d8b43c', 'Yellow']];
+const tplArt = (t, ids, widths, wood) => t && t.print !== false && !wood ? D.single(t, [{ color: t.printColor || FIL_DEFAULT, print: true }]) : D.single(t, colorsOf(ids, widths));
 const stripHTML = (ids, widths) => `<div class="strip">${colorsOf(ids, widths).map(w => `<i style="background:${w.color};flex:${w.w || 1}"></i>`).join('')}</div>`;
 function seedOf(p) { let h = 2166136261; for (const c of String(p.id) + p.no) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h; }
 
@@ -1004,9 +1007,150 @@ function dragList(box, onMove) {
   });
 }
 
+/* ---------- Build from a photo ---------- */
+// Draw a line across the strips in a photo; Bench reads the colors along it, finds where one strip ends and the next begins,
+// and picks the closest wood for each. It's a good first guess; any strip can be changed.
+const labOf = ([r, g, b]) => {
+  const f = c => { c /= 255; return c > .04045 ? Math.pow((c + .055) / 1.055, 2.4) : c / 12.92; };
+  const R = f(r), G = f(g), B = f(b);
+  const X = (R * .4124 + G * .3576 + B * .1805) / .95047, Y = R * .2126 + G * .7152 + B * .0722, Z = (R * .0193 + G * .1192 + B * .9505) / 1.08883;
+  const h = t => t > .008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+  return [116 * h(Y) - 16, 500 * (h(X) - h(Y)), 200 * (h(Y) - h(Z))];
+};
+const hexRgb = h => { h = String(h).replace('#', ''); if (h.length === 3) h = [...h].map(c => c + c).join(''); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) || 0); };
+const dE = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+function stripsFromLine(img, a, b, sens) {
+  const c = document.createElement('canvas'); c.width = img.naturalWidth || img.width; c.height = img.naturalHeight || img.height;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+  const data = g.getImageData(0, 0, c.width, c.height).data, N = 320;
+  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+  const rgb = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1), x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t; let r = 0, gg = 0, bb = 0, n = 0;
+    for (let k = -4; k <= 4; k++) { const px = Math.round(x + nx * k), py = Math.round(y + ny * k); if (px < 0 || py < 0 || px >= c.width || py >= c.height) continue; const o = (py * c.width + px) * 4; r += data[o]; gg += data[o + 1]; bb += data[o + 2]; n++; }
+    rgb.push(n ? [r / n, gg / n, bb / n] : (rgb[i - 1] || [128, 128, 128]));
+  }
+  const lab = rgb.map(labOf), W = 5, T = sens;
+  const mean = (i0, i1) => { const m = [0, 0, 0]; let n = 0; for (let i = Math.max(0, i0); i < Math.min(N, i1); i++) { m[0] += lab[i][0]; m[1] += lab[i][1]; m[2] += lab[i][2]; n++; } return n ? m.map(x => x / n) : m; };
+  const score = lab.map((_, i) => i < W || i > N - W ? 0 : dE(mean(i - W, i), mean(i, i + W)));
+  let cuts = [0];
+  for (let i = W; i < N - W; i++) if (score[i] > T && score[i] >= score[i - 1] && score[i] > score[i + 1] && i - cuts[cuts.length - 1] >= 4) cuts.push(i);
+  cuts.push(N);
+  let segs = cuts.slice(0, -1).map((s, k) => ({ s, e: cuts[k + 1] }));
+  const col = sg => { const lo = sg.s + Math.floor((sg.e - sg.s) * .2), hi = Math.max(lo + 1, sg.e - Math.floor((sg.e - sg.s) * .2)); return mean(lo, hi); };
+  segs.forEach(sg => sg.lab = col(sg));
+  for (let again = true; again && segs.length > 1;) {   // thin slivers join the neighbor they look most like
+    again = false; const k = segs.findIndex(sg => sg.e - sg.s < 5);
+    if (k >= 0) { const l = segs[k - 1], r = segs[k + 1], toL = l && (!r || dE(l.lab, segs[k].lab) <= dE(r.lab, segs[k].lab)); const m = toL ? l : r; m.s = Math.min(m.s, segs[k].s); m.e = Math.max(m.e, segs[k].e); m.lab = col(m); segs.splice(k, 1); again = true; }
+  }
+  return segs.map(sg => ({ f: (sg.e - sg.s) / N, lab: sg.lab }));
+}
+function nearestWood(lab, pool) {
+  let best = null, bd = 1e9;
+  for (const w of pool) { const d = dE(lab, w._lab || (w._lab = labOf(hexRgb(w.color)))); if (d < bd) { bd = d; best = w; } }
+  return best;
+}
+async function scanPhoto(list, widths, done) {
+  const [f] = await pickFiles('image/*'); if (!f) return;
+  let img; try { img = await loadImg(await resizePhoto(f, 1000)); } catch (e) {} if (!img) return toast('Could not read that photo');
+  const pool = shopWoods().length >= 2 ? shopWoods() : allWoods();
+  let line = null, sens = 12, segs = [], ids = [];
+  openSheet(`<div class="kp-title"><h2>Build from a photo</h2></div>
+    <p class="small muted" style="margin:0 0 8px">Drag a line across the strips, from one edge of the knife to the other. Keep the line inside the wood.</p>
+    <canvas id="scCv" class="sc-cv"></canvas>
+    <div id="scRes"></div>`);
+  const cv = $('#scCv'); cv.width = img.naturalWidth || img.width; cv.height = img.naturalHeight || img.height;
+  const draw = () => {
+    const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
+    if (line) { g.lineWidth = Math.max(3, cv.width / 220); g.strokeStyle = '#fff'; g.shadowColor = '#000'; g.shadowBlur = 6; g.beginPath(); g.moveTo(line.a.x, line.a.y); g.lineTo(line.b.x, line.b.y); g.stroke(); g.shadowBlur = 0; g.fillStyle = '#e8b15f'; [line.a, line.b].forEach(q => { g.beginPath(); g.arc(q.x, q.y, g.lineWidth * 1.7, 0, 7); g.fill(); }); }
+  };
+  const pt = e => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * cv.width / r.width, y: (e.clientY - r.top) * cv.height / r.height }; };
+  const total = () => { const t = widths.reduce((a, x) => a + x, 0); return t > 0.5 ? t : 3.5; };
+  const results = () => {
+    const el = $('#scRes');
+    if (!line) { el.innerHTML = ''; return; }
+    segs = stripsFromLine(img, line.a, line.b, sens);
+    ids = segs.map(sg => nearestWood(sg.lab, pool).id);
+    for (let i = ids.length - 1; i > 0; i--) if (ids[i] === ids[i - 1]) { segs[i - 1].f += segs[i].f; segs.splice(i, 1); ids.splice(i, 1); }   // same wood twice in a row is one strip
+    const opts = id => pool.concat(woodById(id) && !pool.some(w => w.id === id) ? [woodById(id)] : []).map(w => `<option value="${esc(w.id)}" ${w.id === id ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
+    el.innerHTML = `<div class="strip sc-strip">${segs.map((sg, i) => `<i style="background:${woodById(ids[i]).color};flex:${sg.f}"></i>`).join('')}</div>
+      <div class="lk-bar"><span class="small muted">${segs.length} strips found</span><span><button class="btn small" id="scLess">Fewer</button> <button class="btn small" id="scMore">More</button></span></div>
+      <div class="card flush">${segs.map((sg, i) => `<div class="strow"><div class="who" style="padding-left:8px"><span class="sc-dot"></span><div class="grow"><div class="t">${i + 1}.</div></div></div><select data-sc="${i}">${opts(ids[i])}</select></div>`).join('')}</div>
+      <div class="kp-go"><button class="btn" id="scAgain">Draw again</button><button class="btn primary" id="scOk">Use these</button></div>`;
+    $$('.sc-dot', el).forEach((d, i) => { const c = segs[i].lab; d.style.background = `rgb(${labToRgb(c).join(',')})`; });
+    $$('[data-sc]', el).forEach(s => s.onchange = () => { ids[+s.dataset.sc] = s.value; $('.sc-strip', el).children[+s.dataset.sc].style.background = woodById(s.value).color; });
+    $('#scLess').onclick = () => { sens = Math.min(60, sens * 1.35); results(); };
+    $('#scMore').onclick = () => { sens = Math.max(3, sens / 1.35); results(); };
+    $('#scAgain').onclick = () => { line = null; draw(); results(); };
+    $('#scOk').onclick = () => {
+      if (ids.length > 40) return toast('That is more than 40 strips. Tap Fewer.');
+      const T = total(), ws = segs.map(sg => Math.max(1 / 32, Math.round(sg.f * T * 32) / 32));
+      list.splice(0, list.length, ...ids); widths.splice(0, widths.length, ...ws); closeSheet(); done(); toast('Strips set. Fix any that look off.');
+    };
+  };
+  let drag = false;
+  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); const p = pt(e); line = { a: p, b: p }; drag = true; draw(); $('#scRes').innerHTML = ''; };
+  cv.onpointermove = e => { if (!drag) return; line.b = pt(e); draw(); };
+  cv.onpointerup = cv.onpointercancel = () => { if (!drag) return; drag = false; if (Math.hypot(line.b.x - line.a.x, line.b.y - line.a.y) < cv.width * .05) { line = null; draw(); return; } results(); };
+  draw();
+}
+function labToRgb([L, a, b]) {
+  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200, inv = t => t * t * t > .008856 ? t * t * t : (t - 16 / 116) / 7.787;
+  const X = inv(fx) * .95047, Y = inv(fy), Z = inv(fz) * 1.08883;
+  const lin = [X * 3.2406 + Y * -1.5372 + Z * -.4986, X * -.9689 + Y * 1.8758 + Z * .0415, X * .0557 + Y * -.204 + Z * 1.057];
+  return lin.map(c => Math.round(255 * Math.max(0, Math.min(1, c > .0031308 ? 1.055 * Math.pow(c, 1 / 2.4) - .055 : 12.92 * c))));
+}
+
+/* ---------- Match the look ---------- */
+// Slide a dial until each strip looks like the real one. The piece redraws as you go, so no measuring.
+function matchLook(list, widths, art, done) {
+  let cur = 0, zoom = false; const orig = widths.slice(), STEP = 1 / 32, PPI = 288;
+  openSheet(`<div class="kp-title"><h2>Match the look</h2></div>
+    <div class="lk-art" id="lkArt"></div>
+    <div class="lk-bar"><span class="small muted">Pick a strip, then slide the dial until it looks like the real one.</span><button class="btn small" id="lkZoom">Zoom in</button></div>
+    <div class="lk-chips" id="lkChips"></div>
+    <div class="ruler dial" id="lkDial"><canvas></canvas><div class="mark"></div></div>
+    <div class="lk-row"><button class="btn" id="lkThin" aria-label="Thinner">Thinner</button><div class="lk-val" id="lkVal"></div><button class="btn" id="lkThick" aria-label="Thicker">Thicker</button></div>
+    <div class="kp-go"><button class="btn" id="lkReset">Start over</button><button class="btn" id="lkNext">Next strip</button><button class="btn primary" id="lkOk">Done</button></div>`, { over: true });
+  const cv = $('#lkDial canvas');
+  const dial = () => {
+    const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (!W) return;
+    cv.width = W * dpr; cv.height = H * dpr; const g = cv.getContext('2d'); g.scale(dpr, dpr);
+    const v = widths[cur], c = W / 2;
+    for (let k = Math.ceil((v - c / PPI) * 32); k <= (v + c / PPI) * 32; k++) {
+      if (k < 1) continue;
+      const x = c + (k / 32 - v) * PPI, lvl = k % 32 === 0 ? 3 : k % 8 === 0 ? 2 : k % 4 === 0 ? 1 : 0;
+      g.strokeStyle = '#2b1907'; g.globalAlpha = Math.max(.15, 1 - Math.abs(x - c) / c) * (lvl ? 1 : .7); g.lineWidth = lvl >= 2 ? 2 : 1.3;
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, [10, 16, 24, 34][lvl]); g.stroke();
+    }
+    g.globalAlpha = 1;
+  };
+  const show = () => {
+    $('#lkArt').innerHTML = art();
+    $('#lkChips').innerHTML = list.map((id, i) => { const w = woodById(id) || { color: '#555' }; return `<button class="lkc ${i === cur ? 'on' : ''}" data-c="${i}" style="background:${w.color}" aria-label="Strip ${i + 1}">${i + 1}</button>`; }).join('');
+    $$('#lkChips [data-c]').forEach(b => b.onclick = () => { cur = +b.dataset.c; show(); });
+    $('#lkVal').innerHTML = `Strip ${cur + 1}<small>${fracHTML(widths[cur])}</small>`;
+    $('#lkNext').disabled = list.length < 2;
+    $('#lkArt').classList.toggle('zoom', zoom); $('#lkZoom').textContent = zoom ? 'Zoom out' : 'Zoom in';
+    dial();
+  };
+  const set = v => { v = Math.max(STEP, Math.min(6, Math.round(v / STEP) * STEP)); if (Math.abs(v - widths[cur]) < 1e-9) return false; widths[cur] = v; haptic(4); show(); return true; };
+  const rl = $('#lkDial'); let drag = null;
+  rl.onpointerdown = e => { rl.setPointerCapture(e.pointerId); drag = { x: e.clientX, v: widths[cur] }; };
+  rl.onpointermove = e => { if (drag) set(drag.v + (e.clientX - drag.x) / PPI); };
+  rl.onpointerup = rl.onpointercancel = () => { drag = null; };
+  $('#lkThin').onclick = () => set(widths[cur] - STEP);
+  $('#lkThick').onclick = () => set(widths[cur] + STEP);
+  $('#lkNext').onclick = () => { cur = (cur + 1) % list.length; show(); };
+  $('#lkZoom').onclick = () => { zoom = !zoom; show(); };
+  $('#lkReset').onclick = () => { orig.forEach((v, i) => widths[i] = v); show(); };
+  $('#lkOk').onclick = () => { closeSheet(); done(); };
+  requestAnimationFrame(show); show();
+}
+
 /* ---------- Wood checklist ---------- */
 // widths (optional): one thickness per strip, kept in step as strips are added, removed and reordered
-function woodPicker(el, list, onChange, widths) {
+function woodPicker(el, list, onChange, widths, art) {
   const W = Array.isArray(widths);
   if (W) { while (widths.length < list.length) widths.push(widths[widths.length - 1] || .75); widths.length = list.length; }
   const add = id => { list.push(id); if (W) widths.push(widths[widths.length - 1] || .75); onChange(list); draw(); };
@@ -1023,13 +1167,16 @@ function woodPicker(el, list, onChange, widths) {
         <button class="wood other" id="otherWood"><span class="sw plus">+</span><span class="wn">Other wood</span></button></div>
       <div class="sec" style="margin-top:18px;font-size:16px">Strip order <span class="small muted">${list.length ? 'drag to reorder · tap to remove' : ''}</span></div>
       <div class="order">${list.length ? list.map((id, i) => { const w = woodById(id) || { name: '?', color: '#555' }; return `<div class="o" data-i="${i}"><b style="background:${w.color}">${i + 1}</b>${esc(w.name)}</div>`; }).join('') : '<div class="empty">Tap woods in the order the strips go. Tap one again if it repeats.</div>'}</div>
+      ${W ? '<div class="tools-row"><button class="btn small primary" id="swPhoto">Build it from a photo</button></div>' : ''}
       ${W && list.length ? `<div class="sec" style="margin-top:18px;font-size:16px">Strip thickness <span class="small muted">blank ${fracHTML(widths.reduce((a, x) => a + x, 0))} wide</span></div>
       <div class="card flush">${list.map((id, i) => { const w = woodById(id) || { name: '?', color: '#555' }; return `<div class="strow"><div class="who" style="padding-left:8px">${swatch(w, 26, 8)}<div class="grow"><div class="t">${i + 1}. ${esc(w.name)}</div></div></div><button class="meas inline" data-sww="${i}"><span class="mv">${fracHTML(widths[i])}</span></button></div>`; }).join('')}</div>
-      <div class="tools-row"><button class="btn small" id="swSame">Make them all the same</button></div>` : ''}`;
+      <div class="tools-row">${art ? '<button class="btn small primary" id="swLook">Match it to the real one</button>' : ''}<button class="btn small" id="swSame">Make them all the same</button></div>` : ''}`;
     $$('.wood[data-w]', el).forEach(b => b.onclick = () => { if (list.length >= 40) return toast('40 strips max'); add(b.dataset.w); });
     $('#otherWood', el).onclick = () => woodSearchSheet(add);
     $$('.o', el).forEach(dragChip);
     $$('[data-sww]', el).forEach(b => b.onclick = () => { const i = +b.dataset.sww; measure({ title: `Strip ${i + 1}: ${woodName(list[i])}`, value: widths[i], min: 1 / 32, max: 6, quick: [.125, .25, .375, .5, .625, .75, 1], onSet: v => { widths[i] = v; onChange(list); draw(); } }); });
+    $('#swPhoto', el)?.addEventListener('click', () => scanPhoto(list, widths, () => { onChange(list); draw(); }));
+    $('#swLook', el)?.addEventListener('click', () => matchLook(list, widths, art, () => { onChange(list); draw(); }));
     $('#swSame', el)?.addEventListener('click', () => measure({ title: 'Every strip', value: widths[0], min: 1 / 32, max: 6, quick: [.25, .375, .5, .625, .75, 1], onSet: v => { widths.fill(v); onChange(list); draw(); } }));
   }
   function dragChip(o) {
@@ -1711,7 +1858,7 @@ VIEWS.editPiece = ({ id }, frame) => {
   $('#slots').innerHTML = type.slots.map((s, si) => {
     const tpls = allTemplates().filter(t => t.group === s.group);
     return `<label class="f">${esc(s.name)}</label><div class="filters" data-slot="${si}">${tpls.map(t => `<button class="tpl ${p.templates[s.name] === t.id ? 'sel' : ''}" data-tp="${t.id}">
-        <div class="pv" style="height:70px">${tplArt(t, p.woods, p.widths)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || '<span class="muted small">No templates here yet. Add them in Catalog.</span>'}</div>`;
+        <div class="pv" style="height:70px">${tplArt(t, p.woods, p.widths, true)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || '<span class="muted small">No templates here yet. Add them in Catalog.</span>'}</div>`;
   }).join('');
   $$('[data-slot]', v).forEach(row => {
     const s = type.slots[+row.dataset.slot];
@@ -1723,7 +1870,7 @@ VIEWS.editPiece = ({ id }, frame) => {
   if (type.board) boardEditor($('#boardEd'), p, () => { p.woods = BD.woods(p.board); drawPreview(); });
   if (type.bowl) bowlEditor($('#bowlEd'), p, () => { p.woods = bowlWoods(p.bowl); drawPreview(); });
   drawPreview();
-  if (!type.bowl && !type.board) { p.widths ||= []; woodPicker($('#woods'), p.woods, () => { drawPreview(); $$('#slots .tpl').forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), p.woods, p.widths); }); }, p.widths); }
+  if (!type.bowl && !type.board) { p.widths ||= []; woodPicker($('#woods'), p.woods, () => { drawPreview(); $$('#slots .tpl').forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), p.woods, p.widths, true); }); }, p.widths, () => pieceArt(p)); }
   const drawPhotos = () => {
     $('#photos').innerHTML = p.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" alt=""><button data-rmp="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="addPh" aria-label="Add photos">+</button>`;
     fillPhotos($('#photos'));
@@ -1826,15 +1973,15 @@ VIEWS.template = ({ id }) => {
     <label class="f">Inspiration <span>(goes in the story)</span></label>
     <textarea id="tinsp" style="min-height:90px" placeholder="Where the shape came from">${esc(t.inspiration || '')}</textarea></div>
     <div class="tray"><div class="tray-h">Material</div>
-      <div class="seg" id="mat"><button data-pm="0" class="${t.print ? '' : 'on'}">Wood</button><button data-pm="1" class="${t.print ? 'on' : ''}">3D print</button></div>
+      <div class="seg" id="mat"><button data-pm="1" class="${t.print !== false ? 'on' : ''}">3D print</button><button data-pm="0" class="${t.print === false ? 'on' : ''}">Wood</button></div>
       <div id="tw" style="margin-top:14px"></div></div>
     <div class="sec">Used in</div>
     <div class="card flush">${uses.length ? uses.map(p => `<button class="listrow" data-id="${p.id}"><div class="grow"><div class="t">No. ${pad(p.no)} · ${esc(typeName(p))}</div><div class="s">${esc(p.woods.map(i => woodById(i)?.name).join(', '))}</div></div>${statusChip(p.status)}</button>`).join('') : '<div class="listrow muted">Not used yet</div>'}</div>
     <div style="height:30px"></div>`;
-  if (t.print) {
-    const cols = [['#3d4147', 'Black'], ['#8e9399', 'Gray'], ['#e8e4dc', 'White'], ['#223626', 'Green'], ['#c8643c', 'Orange'], ['#2f5f8a', 'Blue'], ['#a8322d', 'Red'], ['#d8b43c', 'Yellow']];
-    $('#tw').innerHTML = `<label class="f" style="margin-top:0">Filament color</label><div class="fils">${cols.map(([c, n]) => `<button class="fil ${(t.printColor || cols[0][0]) === c ? 'on' : ''}" data-fc="${c}" style="background:${c}" aria-label="${n}"></button>`).join('')}</div>`;
-    $$('[data-fc]', v).forEach(b => b.onclick = () => { editTpl(t, { printColor: b.dataset.fc }); t.printColor = b.dataset.fc; $('#big').innerHTML = tplArt(t, woods); $$('[data-fc]', v).forEach(x => x.classList.toggle('on', x === b)); });
+  if (t.print !== false) {
+    const cols = FILAMENTS, cur = t.printColor || FIL_DEFAULT;
+    $('#tw').innerHTML = `<label class="f" style="margin-top:0">Filament color <span>${esc((cols.find(c => c[0] === cur) || ['', 'custom'])[1])}</span></label><div class="fils">${cols.map(([c, n]) => `<button class="fil ${cur === c ? 'on' : ''}" data-fc="${c}" style="background:${c}" aria-label="${n}"></button>`).join('')}</div>`;
+    $$('[data-fc]', v).forEach(b => b.onclick = () => { editTpl(t, { printColor: b.dataset.fc }); t.printColor = b.dataset.fc; $('#big').innerHTML = tplArt(t, woods); $$('[data-fc]', v).forEach(x => x.classList.toggle('on', x === b)); $('#tw .f span').textContent = (FILAMENTS.find(c => c[0] === b.dataset.fc) || ['', ''])[1]; });
   } else woodPicker($('#tw'), woods, () => { $('#big').innerHTML = tplArt(t, woods); });
   $$('[data-pm]', v).forEach(b => b.onclick = () => { editTpl(t, { print: b.dataset.pm === '1' }); render(); });
   stlLoad().then(ix => {
@@ -1877,7 +2024,7 @@ VIEWS.combo = ({ type: typeId }, frame) => {
   const v = $('#view');
   const fake = () => ({ id: 'combo', no: 0, type: typeId, templates: frame.sel, woods: frame.woods, angle: frame.angle || 0 });
   v.innerHTML = `<div class="preview" id="cpv"></div><div style="margin-top:10px">${modeSeg(viewMode)}</div>${angleRow(frame)}
-    ${type.slots.map((s, si) => `<label class="f">${esc(s.name)}</label><div class="filters" data-slot="${si}">${allTemplates().filter(t => t.group === s.group).map(t => `<button class="tpl" data-tp="${t.id}"><div class="pv" style="height:70px">${tplArt(t, frame.woods)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('')}</div>`).join('')}
+    ${type.slots.map((s, si) => `<label class="f">${esc(s.name)}</label><div class="filters" data-slot="${si}">${allTemplates().filter(t => t.group === s.group).map(t => `<button class="tpl" data-tp="${t.id}"><div class="pv" style="height:70px">${tplArt(t, frame.woods, undefined, true)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('')}</div>`).join('')}
     <div class="tray"><div class="tray-h">Woods</div><div id="cw"></div></div>
     <button class="btn primary wide" id="mk" style="margin-top:18px">Start a piece like this</button><div style="height:30px"></div>`;
   const draw = () => {
@@ -1887,7 +2034,7 @@ VIEWS.combo = ({ type: typeId }, frame) => {
   bindMode(v, draw, 'mode', fake);
   bindAngle(v, frame, draw);
   $$('[data-slot]', v).forEach(row => { const s = type.slots[+row.dataset.slot]; $$('[data-tp]', row).forEach(b => b.onclick = () => { frame.sel[s.name] = b.dataset.tp; draw(); }); });
-  woodPicker($('#cw'), frame.woods, () => { draw(); $$('.tpl[data-tp]', v).forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), frame.woods); }); });
+  woodPicker($('#cw'), frame.woods, () => { draw(); $$('.tpl[data-tp]', v).forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), frame.woods, undefined, true); }); });
   draw();
   $('#mk').onclick = () => { stack.push({ view: 'editPiece', params: {}, draft: blankPiece(type.id, { templates: { ...frame.sel }, woods: [...frame.woods], angle: frame.angle || 0 }) }); render(true); };
 };
@@ -1952,7 +2099,7 @@ async function importSTLs() {
   $('#imPr').onclick = () => { printed = !printed; $('#imPr .switch').classList.toggle('on', printed); };
   $$('#sheetCard [data-i]').forEach(el => el.onchange = () => {
     const t = items[+el.dataset.i]; t[el.dataset.k] = el.value.trim();
-    if (el.dataset.k === 'group') { t.print = el.value === 'shop-extras' || undefined; const ks = $(`#sheetCard select[data-i="${el.dataset.i}"][data-k="kind"]`); ks.hidden = el.value !== 'kitchen-head'; if (!ks.hidden && !t.kind) t.kind = ks.value; }
+    if (el.dataset.k === 'group') { const ks = $(`#sheetCard select[data-i="${el.dataset.i}"][data-k="kind"]`); ks.hidden = el.value !== 'kitchen-head'; if (!ks.hidden && !t.kind) t.kind = ks.value; }
     if (el.dataset.k === 'code') t.id = t.code = el.value.trim().toUpperCase();
   });
   $('#imOk').onclick = () => {
