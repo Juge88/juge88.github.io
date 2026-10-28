@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.8.6';
+const APP_VERSION = '1.8.7';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -2410,7 +2410,8 @@ VIEWS.settings = () => {
     <div class="tray"><div class="tray-h">Story page for QR codes</div>
       ${ghOn() ? `<p class="note" style="margin:-6px 0 10px">Connected. Pieces go online by themselves when you print a QR, and the page updates itself after app updates.</p>
       <div class="pagechip">${esc(st.pageUrl.replace(/^https:\/\//, ''))}</div>
-      <div class="row" style="margin-top:12px"><button class="btn small" id="gsOpen">Open page</button><button class="btn small" id="gsOff">Disconnect</button></div>`
+      <p class="note" id="gsVer" style="margin:10px 0 0">Page on your site: version ${esc((st.gh.pageVer || '').split(':')[0] || 'not uploaded yet')}. This app is ${esc(APP_VERSION)}.</p>
+      <div class="row" style="margin-top:12px"><button class="btn small" id="gsOpen">Open page</button><button class="btn small" id="gsUpd">Update page now</button><button class="btn small" id="gsOff">Disconnect</button></div>`
       : `<p class="note" style="margin:-6px 0 10px">QR codes open a page with the piece and its story. Set it up once and Bench takes care of it from then on.</p>
       <button class="btn primary wide" id="gsSet">Set up story page</button>
       <details class="adv"><summary>Use my own web address instead</summary>
@@ -2447,6 +2448,11 @@ VIEWS.settings = () => {
     $('#syNow')?.addEventListener('click', async () => { $('#syStat').textContent = 'Syncing…'; await syncNow(); syShow(); });
   }
   $('#gsOpen')?.addEventListener('click', () => openUrl(st.pageUrl));
+  $('#gsUpd')?.addEventListener('click', async () => {
+    st.gh.pageVer = ''; toast('Updating the page…');
+    try { await publishPieces(S.pieces.filter(p => p.pubId && p.pubHash !== pubHash(p))); toast('Updated. It can take a minute or two to show up. Then close the page and open it again.'); render(); }
+    catch (e) { toast(e.status === 401 ? 'GitHub code stopped working. Reconnect below.' : 'Couldn’t update (no internet?). Try again later.'); }
+  });
   $('#gsOff')?.addEventListener('click', () => { const was = st.gh, url = st.pageUrl; st.gh = null; st.pageUrl = ''; save(); render(); toast('Disconnected', { action: 'Undo', onAction: () => { st.gh = was; st.pageUrl = url; save(); render(); } }); });
   if ($('#getPage')) $('#getPage').onclick = async () => { const logo = await logoDataUrl(); let html = await (await fetch('story.html')).text(); if (logo) html = html.replace('<head>', `<head><script>window.SHOP_LOGO=${JSON.stringify(logo)}</script>`); saveFile(html, 'index.html', 'text/html'); };
   $$('[data-type]', v).forEach(b => b.onclick = () => go('editType', { id: b.dataset.type }));
