@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.8.3';
+const APP_VERSION = '1.8.5';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -26,6 +26,7 @@ function load() {
   S.printed ??= {};
   S.tplEdits ??= {};
   S.hiddenTpls ??= [];
+  S.hiddenGroups ??= [];
   S.woodEdits ??= {};
   S.kinds ??= structuredClone(DEFAULT_KINDS);
   S.stock ??= {};
@@ -163,6 +164,7 @@ function allTemplates(withHidden) {
 }
 const tplById = id => allTemplates(true).find(t => t.id === id);
 const typeById = id => S.types.find(t => t.id === id) || { id, name: 'Piece', noun: 'piece', slots: [], join: 'none', build: '', care: '' };
+const liveGroups = () => S.groups.filter(g => !(S.hiddenGroups || []).includes(g.id));
 const groupById = id => S.groups.find(g => g.id === id) || { id, name: id, prefix: '' };
 const kindById = id => S.kinds.find(k => k.id === id);
 const finishByName = n => S.finishes.find(f => f.name === n);
@@ -1199,6 +1201,7 @@ VIEWS.pieces = () => {
     $$('.piece', v).forEach(b => b.onclick = () => go('piece', { id: b.dataset.id }));
     fillPhotos($('#plist'));
   };
+  longPress($('#plist'), '.piece', el => pieceMenu(S.pieces.find(x => x.id === el.dataset.id)));
   $('#pq').oninput = () => { pieceQuery = $('#pq').value; draw(); };
   $$('[data-f]', v).forEach(b => b.onclick = () => { pieceFilter = b.dataset.f; $$('[data-f]', v).forEach(x => x.classList.toggle('on', x === b)); draw(); });
   draw();
@@ -1813,6 +1816,117 @@ VIEWS.editPiece = ({ id }, frame) => {
   }));
 };
 
+/* ---------- Long press menus ---------- */
+// Hold a tile or tab to get everything you can do with it. Normal taps still open it as before.
+function longPress(root, sel, fn) {
+  if (!root) return;
+  let timer = null, sx = 0, sy = 0, fired = false;
+  const cancel = () => clearTimeout(timer);
+  root.addEventListener('pointerdown', e => { const el = e.target.closest(sel); fired = false; if (!el || !root.contains(el)) return; sx = e.clientX; sy = e.clientY; cancel(); timer = setTimeout(() => { fired = true; haptic(14); fn(el); }, 480); });
+  root.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 9) cancel(); });
+  ['pointerup', 'pointercancel'].forEach(ev => root.addEventListener(ev, cancel));
+  root.addEventListener('click', e => { if (fired) { e.stopPropagation(); e.preventDefault(); fired = false; } }, true);
+  root.addEventListener('contextmenu', e => { const el = e.target.closest(sel); if (!el) return; e.preventDefault(); if (!fired) { fired = true; cancel(); haptic(14); fn(el); } });
+}
+function actionSheet(title, items) {
+  items = items.filter(Boolean);
+  openSheet(`<h2>${esc(title)}</h2><div class="card flush">${items.map((it, i) => `<button class="listrow" data-ai="${i}"><div class="grow"><div class="t" ${it[2] ? 'style="color:var(--danger)"' : ''}>${esc(it[0])}</div></div></button>`).join('')}</div>`);
+  $$('#sheetCard [data-ai]').forEach(b => b.onclick = () => { const it = items[+b.dataset.ai]; closeSheet(); setTimeout(it[1], 30); });
+}
+function askText(title, value, onDone, label = 'Name') {
+  openSheet(`<h2>${esc(title)}</h2><label class="f">${esc(label)}</label><input id="atx" value="${esc(value || '')}" autocomplete="off"><button class="btn primary wide" id="atok" style="margin-top:16px">Save</button>`);
+  const ok = () => { const v = $('#atx').value.trim(); if (!v) return; closeSheet(); onDone(v); };
+  $('#atok').onclick = ok; $('#atx').onkeydown = e => { if (e.key === 'Enter') ok(); };
+}
+function deletePieceNow(p) {
+  confirmSheet(`Delete No. ${pad(p.no)}?`, 'Delete', () => {
+    const at = S.pieces.findIndex(x => x.id === p.id), gone = S.pieces[at]; if (!gone) return;
+    S.pieces.splice(at, 1); save(); render();
+    toast(`Deleted No. ${pad(gone.no)}`, { action: 'Undo',
+      onAction: () => { S.pieces.splice(Math.min(at, S.pieces.length), 0, gone); save(); render(); toast(`No. ${pad(gone.no)} is back`); },
+      onTimeout: () => { if (!S.pieces.includes(gone)) [...(gone.photos || []), ...(gone.buildPhotos || []).map(b => b.id)].forEach(photoDel); } });
+  });
+}
+function pieceMenu(p) {
+  if (!p) return;
+  const setSt = k => { const was = p.status; p.status = k; save(); render(); if (k === 'available' && was === 'building' && !p.printed) askPrint(p); };
+  actionSheet(`${typeName(p)} No. ${pad(p.no)}`, [
+    ['Open', () => go('piece', { id: p.id })],
+    ['Edit', () => go('editPiece', { id: p.id })],
+    ['Make a copy', () => duplicatePiece(p)],
+    p.status !== 'building' && ['Mark as building', () => setSt('building')],
+    p.status !== 'available' && ['Mark as finished', () => setSt('available')],
+    p.status !== 'sold' && ['Mark as sold', () => setSt('sold')],
+    ['Print a card', () => S.settings.pageUrl ? printCardsSheet(p) : pageSetupSheet(() => printCardsSheet(p))],
+    ['Delete', () => deletePieceNow(p), true]
+  ]);
+}
+function projectMenu(q) {
+  actionSheet(projTitle(q), [['Open', () => go('project', { id: q.id })],
+    ['Delete', () => confirmSheet(`Delete ${projTitle(q)}?`, 'Delete', () => { q.photos.forEach(photoDel); S.projects = S.projects.filter(x => x !== q); save(); render(); }), true]]);
+}
+function removeTplNow(t) {
+  const id = t.id, uses = S.pieces.filter(p => Object.values(p.templates || {}).includes(id));
+  confirmSheet(`Remove ${t.code} ${t.name}?`, 'Remove', () => {
+    const builtin = BUILTIN_TEMPLATES.some(x => x.id === id), custom = S.templates.find(x => x.id === id), printed = S.printed[id];
+    S.templates = S.templates.filter(x => x.id !== id); delete S.printed[id];
+    if (builtin && !S.hiddenTpls.includes(id)) S.hiddenTpls.push(id);
+    save(); render();
+    toast(`Removed ${t.code}`, { action: 'Undo', onAction: () => { if (custom) S.templates.push(custom); S.hiddenTpls = S.hiddenTpls.filter(x => x !== id); if (printed) S.printed[id] = printed; save(); render(); } });
+  }, uses.length ? `${uses.length} logged piece${uses.length > 1 ? 's use' : ' uses'} it; they keep their drawing.` : 'You can undo this right after.');
+}
+async function tplMenu(t) {
+  if (!t) return;
+  const ix = await stlLoad(), file = ix[t.id] || t.stlName;
+  actionSheet(`${t.code} · ${t.name}`, [
+    ['Open', () => go('template', { id: t.id })],
+    [S.printed[t.id] ? 'Mark as not printed' : 'Mark as printed', () => { if (S.printed[t.id]) delete S.printed[t.id]; else S.printed[t.id] = today(); save(); render(); }],
+    file && ['Download STL', () => ix[t.id] ? saveAsset('stl/' + file, file, 'model/stl') : saveStored('stl:' + t.id, file, 'model/stl')],
+    ['Rename', () => askText('Rename', t.name, v => { editTpl(t, { name: v }); render(); })],
+    ['Move to another section', () => {
+      openSheet(`<h2>Move ${esc(t.code)}</h2><div class="card flush">${liveGroups().map(g => `<button class="listrow" data-mg="${g.id}"><div class="grow"><div class="t">${esc(g.name)}${g.id === t.group ? ' ✓' : ''}</div></div></button>`).join('')}</div>`);
+      $$('#sheetCard [data-mg]').forEach(b => b.onclick = () => { closeSheet(); editTpl(t, { group: b.dataset.mg }); catGroup = b.dataset.mg; render(); toast(`Moved to ${groupById(b.dataset.mg).name}`); });
+    }],
+    ['Remove', () => removeTplNow(t), true]
+  ]);
+}
+function groupMenu(g) {
+  if (!g) return;
+  actionSheet(g.name, [
+    ['Rename', () => askText('Rename section', g.name, v => { g.name = v; save(); render(); })],
+    ['Add or bring back a section', () => sectionsSheet()],
+    ['Remove this section', () => removeGroupNow(g), true]
+  ]);
+}
+function removeGroupNow(g) {
+  const inG = allTemplates().filter(t => t.group === g.id);
+  confirmSheet(`Remove ${g.name}?`, 'Remove', () => {
+    const customs = S.templates.filter(t => t.group === g.id), hidBefore = [...S.hiddenTpls], printed = Object.fromEntries(inG.filter(t => S.printed[t.id]).map(t => [t.id, S.printed[t.id]]));
+    S.templates = S.templates.filter(t => t.group !== g.id);
+    inG.forEach(t => { if (BUILTIN_TEMPLATES.some(x => x.id === t.id) && !S.hiddenTpls.includes(t.id)) S.hiddenTpls.push(t.id); delete S.printed[t.id]; });
+    S.hiddenGroups.push(g.id); save(); render();
+    toast(`Removed ${g.name}`, { action: 'Undo', onAction: () => { S.templates.push(...customs); S.hiddenTpls = hidBefore; Object.assign(S.printed, printed); S.hiddenGroups = S.hiddenGroups.filter(x => x !== g.id); catGroup = g.id; save(); render(); } });
+  }, inG.length ? `Its ${inG.length} template${inG.length > 1 ? 's go' : ' goes'} with it. You can undo this right after, or bring the section back later.` : 'You can bring it back later.');
+}
+function sectionsSheet() {
+  const hid = S.groups.filter(g => S.hiddenGroups.includes(g.id));
+  openSheet(`<h2>Sections</h2><label class="f" style="margin-top:0">New section</label><input id="sgn" placeholder="e.g. Cutting boards" autocomplete="off">
+    <label class="f">File prefix <span>(optional, so imports sort themselves: B for B1_name.stl)</span></label><input id="sgp" placeholder="B" maxlength="4" autocomplete="off">
+    <button class="btn primary wide" id="sgok" style="margin-top:14px">Add section</button>
+    ${hid.length ? `<div class="sec" style="margin-top:22px;font-size:16px">Removed sections</div><div class="card flush">${hid.map(g => `<div class="listrow"><div class="grow"><div class="t">${esc(g.name)}</div></div><button class="btn small tonal" data-bk="${g.id}">Bring back</button></div>`).join('')}</div>` : ''}`);
+  $('#sgok').onclick = () => { const n = $('#sgn').value.trim(); if (!n) return toast('Name the section'); const gid = 'g-' + uid(); S.groups.push({ id: gid, name: n, prefix: $('#sgp').value.trim().toUpperCase() }); catGroup = gid; save(); closeSheet(); render(); };
+  $$('#sheetCard [data-bk]').forEach(b => b.onclick = () => {
+    const gid = b.dataset.bk; S.hiddenGroups = S.hiddenGroups.filter(x => x !== gid);
+    S.hiddenTpls = S.hiddenTpls.filter(id => { const t = BUILTIN_TEMPLATES.find(x => x.id === id); return !(t && ((S.tplEdits[id] || {}).group || t.group) === gid); });
+    catGroup = gid; save(); closeSheet(); render(); toast('Section is back');
+  });
+}
+function woodMenu(id) {
+  const w = woodById(id); if (!w) return;
+  actionSheet(w.name, [['Open', () => go('editWood', { id })],
+    [S.shop.includes(id) ? 'Take out of my shop' : 'Put in my shop', () => { if (S.shop.includes(id)) S.shop = S.shop.filter(x => x !== id); else S.shop.push(id); save(); render(); }]]);
+}
+
 /* ---------- Catalog ---------- */
 let catGroup = null, catPrinted = 'all';
 /* ---------- Gallery ---------- */
@@ -1835,6 +1949,7 @@ VIEWS.gallery = () => {
   $$('[data-f]', v).forEach(b => b.onclick = () => { galFilter = b.dataset.f; render(); });
   $$('[data-gm]', v).forEach(b => b.onclick = () => { galMode = b.dataset.gm; render(); });
   $$('.gtile', v).forEach(b => b.onclick = () => { const it = items[+b.dataset.i]; go(it.k === 'piece' ? 'piece' : 'project', { id: (it.p || it.q).id }); });
+  longPress(v, '.gtile', el => { const it = items[+el.dataset.i]; if (it.k === 'piece') pieceMenu(it.p); else projectMenu(it.q); });
   fillPhotos(v);
   fab(() => { const q = { id: uid(), title: '', date: today(), notes: '', photos: [] }; S.projects.push(q); save(); go('project', { id: q.id }); }, 'Add a project', true);
 };
@@ -1864,16 +1979,16 @@ VIEWS.project = ({ id }) => {
 VIEWS.catalog = () => {
   setTop('Catalog', `<button class="icon" id="addTpl" aria-label="Add templates">${ICON.plus}</button>`);
   const v = $('#view');
-  const groups = S.groups.filter(g => DEFAULT_GROUPS.some(d => d.id === g.id) || allTemplates().some(t => t.group === g.id));   // the standard sections always show, even when empty
+  const groups = liveGroups();   // the standard sections always show, even when empty
   if (!groups.some(g => g.id === catGroup)) catGroup = groups[0]?.id;
   const inGroup = allTemplates().filter(t => t.group === catGroup);
   const nPrinted = inGroup.filter(t => S.printed[t.id]).length;
   let tpls = inGroup;
   if (catPrinted === 'yes') tpls = tpls.filter(t => S.printed[t.id]); else if (catPrinted === 'no') tpls = tpls.filter(t => !S.printed[t.id]);
   v.innerHTML = `
-    <div class="filters">${groups.map(g => `<button data-g="${g.id}" class="${g.id === catGroup ? 'on' : ''}">${esc(g.name)}</button>`).join('')}</div>
-    <button class="card listrow" id="pw" style="border-radius:20px"><div class="grow"><div class="t">Preview woods</div><div style="margin-top:8px">${stripHTML(S.previewWoods)}</div></div><span class="chip">Change</span></button>
-    <div class="sec">${esc(groupById(catGroup).name)} <span class="small muted">${nPrinted} of ${inGroup.length} printed</span></div>
+    <div class="filters">${groups.map(g => `<button data-g="${g.id}" class="${g.id === catGroup ? 'on' : ''}">${esc(g.name)}</button>`).join('')}<button id="addSec" aria-label="Add or remove sections">+ Section</button></div>
+    ${allTemplates().some(t => t.print === false) ? `<button class="card listrow" id="pw" style="border-radius:20px"><div class="grow"><div class="t">Preview woods</div><div style="margin-top:8px">${stripHTML(S.previewWoods)}</div></div><span class="chip">Change</span></button>` : ''}
+    <div class="sec">${esc(groupById(catGroup).name)} <span style="display:flex;align-items:center;gap:10px"><span class="small muted">${nPrinted} of ${inGroup.length} printed</span><button class="btn small" id="secEdit">Edit</button></span></div>
     <div style="margin:0 2px 12px" id="catq"></div>
     <div class="seg" id="pf" style="margin-bottom:12px">${[['all', 'All'], ['yes', 'Printed'], ['no', 'Not printed']].map(([k, l]) => `<button data-pf="${k}" class="${catPrinted === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div class="grid">${tpls.map(t => `<button class="tpl" data-tp="${t.id}">${S.printed[t.id] ? '<span class="pbadge">✓</span>' : ''}<div class="pv">${tplArt(t, S.previewWoods)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || `<p class="muted" style="grid-column:1/-1">Nothing in ${esc(groupById(catGroup).name.toLowerCase())} yet. Tap + and choose your STL files${groupById(catGroup).prefix ? `. Name them like ${esc(groupById(catGroup).prefix)}1_name.stl and Bench files them here` : ''}.</p>`}</div>
@@ -1888,10 +2003,14 @@ VIEWS.catalog = () => {
     $$('[data-un]').forEach(b => b.onclick = () => { S.hiddenTpls = S.hiddenTpls.filter(x => x !== b.dataset.un); save(); toast(`${b.dataset.un} is back`); if (!S.hiddenTpls.length) closeSheet(); render(); if (S.hiddenTpls.length) $('#hidT').click(); });
   });
   $$('[data-g]', v).forEach(b => b.onclick = () => { catGroup = b.dataset.g; render(); });
+  $('#addSec', v).onclick = () => sectionsSheet();
+  $('#secEdit', v).onclick = () => groupMenu(groupById(catGroup));
+  longPress(v, '.tpl[data-tp]', el => tplMenu(tplById(el.dataset.tp)));
+  longPress(v, '[data-g]', el => groupMenu(groupById(el.dataset.g)));
   $$('[data-pf]', v).forEach(b => b.onclick = () => { catPrinted = b.dataset.pf; render(); });
   $$('[data-tp]', v).forEach(b => b.onclick = () => go('template', { id: b.dataset.tp }));
   $$('[data-ct]', v).forEach(b => b.onclick = () => go('combo', { type: b.dataset.ct }));
-  $('#pw').onclick = () => {
+  const pwB = $('#pw'); if (pwB) pwB.onclick = () => {
     const list = [...S.previewWoods];
     openSheet(`<h2>Preview woods</h2><div id="pwp"></div><button class="btn primary wide" id="pwok" style="margin-top:16px">Done</button>`);
     woodPicker($('#pwp'), list, () => {});
@@ -2042,7 +2161,7 @@ async function importSTLs() {
   }
   items.length = 0; items.push(...fresh);
   if (!items.length) { return openSheet(`<h2>Already in your catalog</h2><p class="muted">Nothing new to add. ${skipped.length > 1 ? 'All ' + skipped.length + ' files match templates you already have.' : 'That file matches a template you already have.'}</p><div class="card flush">${skipped.map(s => `<div class="listrow small">${esc(s)}</div>`).join('')}</div><button class="btn wide" id="dupOk" style="margin-top:14px">OK</button>`), $('#dupOk').onclick = () => closeSheet(); }
-  const optsG = sel => S.groups.map(g => `<option value="${g.id}" ${g.id === sel ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+  const optsG = sel => liveGroups().map(g => `<option value="${g.id}" ${g.id === sel ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
   const optsK = sel => S.kinds.map(k => `<option value="${esc(k.id)}" ${k.id === sel ? 'selected' : ''}>${esc(k.name)}</option>`).join('');
   openSheet(`<h2>Add ${items.length} template${items.length > 1 ? 's' : ''}</h2>
     ${skipped.length ? `<p class="note" style="margin-top:-6px">Left out ${skipped.length} you already have: ${esc(skipped.join('; '))}.</p>` : ''}
@@ -2112,7 +2231,7 @@ async function addSvgTemplate() {
   const dup = allTemplates(true).find(x => G.sameShape(t, x));
   if (dup) return toast(`That's the same shape as ${dup.code} ${dup.name}, already in your catalog`);
   openSheet(`<h2>New template</h2><div class="preview" style="min-height:160px">${tplArt(t, S.previewWoods)}</div>
-    <label class="f">Group</label><select id="ng">${S.groups.map(g => `<option value="${g.id}" ${g.id === t.group ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}<option value="+">+ New group…</option></select>
+    <label class="f">Group</label><select id="ng">${liveGroups().map(g => `<option value="${g.id}" ${g.id === t.group ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}<option value="+">+ New group…</option></select>
     <div id="newG" hidden><div class="row"><div><label class="f">Group name</label><input id="ngn" placeholder="e.g. Board handles"></div><div style="flex:.5"><label class="f">Code prefix</label><input id="ngp" placeholder="B"></div></div></div>
     <div class="row"><div style="flex:.5"><label class="f">Number</label><input id="nc" value="${esc(t.code)}"></div><div><label class="f">Name</label><input id="nn" value="${esc(t.name)}"></div></div>
     <p class="note">SVGs show the shape only. Use the STL to get the dovetail and punch marks for finished previews.</p>
@@ -2159,6 +2278,7 @@ VIEWS.woods = () => {
   $('#wid').onclick = () => identifyWood(null);
   $$('[data-sc]', v).forEach(b => b.onclick = () => { woodScope = b.dataset.sc; $$('[data-sc]', v).forEach(x => x.classList.toggle('on', x === b)); draw(); });
   draw();
+  longPress($('#wl'), '[data-w]', el => woodMenu(el.dataset.w));
   $('#addWood').onclick = () => newWoodFlow('', null);
 };
 VIEWS.editWood = ({ id }, frame) => {
@@ -2366,7 +2486,7 @@ VIEWS.editType = ({ id }, frame) => {
     <div class="tray" id="slotBox" ${t.board ? 'hidden' : ''}>
     <div class="tray-h">Template parts</div>
     <div class="card flush">${t.slots.map((s, i) => `<div class="listrow"><div class="grow"><input data-sn="${i}" value="${esc(s.name)}" style="margin-bottom:8px">
-      <select data-sg="${i}">${S.groups.map(g => `<option value="${g.id}" ${g.id === s.group ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}<option value="+">+ New group…</option></select></div>
+      <select data-sg="${i}">${liveGroups().map(g => `<option value="${g.id}" ${g.id === s.group ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}<option value="+">+ New group…</option></select></div>
       <button class="icon" data-sx="${i}" aria-label="Remove">${ICON.trash}</button></div>`).join('')}
       <button class="listrow add" id="addSlot">+ Add a part (handle, head, arm…)</button></div>
     <label class="f">How parts go together</label>
@@ -2374,7 +2494,7 @@ VIEWS.editType = ({ id }, frame) => {
     <div class="tray"><label class="f" style="margin-top:0">How it's made <span>(goes in the story)</span></label><textarea id="tb">${esc(t.build)}</textarea>
     <label class="f">Care instructions</label><textarea id="tc">${esc(t.care)}</textarea>
     ${t.byKind ? '<p class="note">Kitchen tools take their name and care from the head you pick. Edit those under Head kinds.</p>' : ''}</div>
-    ${ex && !used && !DEFAULT_TYPES.some(d => d.id === t.id) ? `<button class="btn wide danger" id="dt" style="margin-top:24px">Delete type</button>` : ''}<div style="height:30px"></div>`;
+    ${ex && !used ? `<button class="btn wide danger" id="dt" style="margin-top:24px">Remove this type</button>` : ex ? `<p class="note center" style="margin-top:24px">${S.pieces.filter(p => p.type === t.id).length} of your pieces use this type, so it can't be removed yet.</p>` : ''}<div style="height:30px"></div>`;
   const read = () => { t.name = $('#tn').value.trim(); t.noun = $('#tno').value.trim(); $$('[data-sn]', v).forEach(i => t.slots[+i.dataset.sn].name = i.value.trim() || 'Part'); t.build = $('#tb').value.trim(); t.care = $('#tc').value.trim(); };
   $$('[data-tk]', v).forEach(b => b.onclick = () => { read(); t.board = b.dataset.tk === 'board'; if (t.board) { t.slots = []; t.join = 'none'; } render(); });
   $$('[data-sg]', v).forEach(sel => sel.onchange = () => {
@@ -2396,7 +2516,7 @@ VIEWS.editType = ({ id }, frame) => {
     const prev = stack[stack.length - 1]; if (prev?.view === 'editPiece' && prev.draft && i < 0) prev.draft.type = t.id;
     render(true);
   };
-  $('#dt')?.addEventListener('click', () => confirmSheet(`Delete ${t.name}?`, 'Delete', () => { S.types = S.types.filter(x => x.id !== t.id); save(); stack.pop(); render(true); }));
+  $('#dt')?.addEventListener('click', () => confirmSheet(`Remove ${t.name}?`, 'Remove', () => { const gone = S.types.find(x => x.id === t.id); S.types = S.types.filter(x => x.id !== t.id); save(); stack.pop(); render(true); toast(`Removed ${t.name}`, { action: 'Undo', onAction: () => { if (!S.types.some(x => x.id === gone.id)) S.types.push(gone); save(); render(true); } }); }, 'You can undo this right after.'));
 };
 
 /* ---------- Backup ---------- */
