@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.8.2';
+const APP_VERSION = '1.8.3';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -1917,13 +1917,16 @@ VIEWS.template = ({ id }) => {
   setTop(`${t.code} · ${t.name}`, delBtn);
   const v = $('#view'), woods = [...S.previewWoods];
   const uses = S.pieces.filter(p => Object.values(p.templates || {}).includes(id));
-  const isHead = t.group === 'kitchen-head';
+  const isHead = t.group === 'kitchen-head', guide = guideFor(t);
   v.innerHTML = `<div class="preview" id="big">${tplArt(t, woods)}</div>
     <p class="note center">${esc(groupById(t.group).name)} · about ${(t.w / 25.4).toFixed(1)}″ × ${(t.h / 25.4).toFixed(1)}″</p>
     <div class="tray"><button class="swrow" id="prt" style="padding:4px 2px"><div class="grow"><div class="t">Printed</div><div class="s">${S.printed[id] ? 'Printed ' + esc(new Date(S.printed[id] + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })) : 'Not printed yet'}</div></div><span class="switch ${S.printed[id] ? 'on' : ''}"><i></i></span></button></div>
+    ${guide ? `<div class="tray"><div class="tray-h">How to use</div>${guide.print ? `<p class="gprint"><b>Print:</b> ${esc(guide.print)}</p>` : ''}${guide.steps.length ? `<ol class="gsteps">${guide.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}${guide.tip ? `<p class="note" style="margin:8px 0 0">${esc(guide.tip)}</p>` : ''}${guide.img ? `<figure class="gfig"><img id="gimg" src="${guide.img}" alt=""><figcaption>${esc(guide.caption || '')}</figcaption></figure>` : ''}${guide.untested && !S.printed[id] ? '<p class="note" style="margin:8px 0 0">Not test-printed yet. Flip Printed on once you have.</p>' : ''}</div>` : ''}
     <div class="tray" id="stlTray" hidden><button class="swrow" id="stlGet" style="padding:4px 2px"><div class="grow"><div class="t">Download STL</div><div class="s" id="stlName"></div></div><span class="chev">${ICON.chev || '›'}</span></button></div>
     <div class="tray"><label class="f">Name</label><input id="tname" value="${esc(t.name)}">
     ${isHead ? `<label class="f">Makes a…</label><select id="tkind">${S.kinds.map(k => `<option value="${esc(k.id)}" ${k.id === t.kind ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}<option value="+">+ New kind…</option></select>` : ''}
+    <label class="f">My notes <span>(print settings, tips, what to fix)</span></label>
+    <textarea id="tnotes" style="min-height:70px" placeholder="PETG, 0.2 mm layers, 4 walls…">${esc(t.notes || '')}</textarea>
     <label class="f">Inspiration <span>(goes in the story)</span></label>
     <textarea id="tinsp" style="min-height:90px" placeholder="Where the shape came from">${esc(t.inspiration || '')}</textarea></div>
     <div class="tray"><div class="tray-h">Material</div>
@@ -1945,6 +1948,8 @@ VIEWS.template = ({ id }) => {
   $('#prt').onclick = () => { if (S.printed[id]) delete S.printed[id]; else S.printed[id] = today(); save(); render(); };
   $('#tname').onchange = () => { editTpl(t, { name: $('#tname').value.trim() || t.name }); setTop(`${t.code} · ${$('#tname').value.trim()}`, delBtn); bindDel(); };
   $('#tinsp').onchange = () => editTpl(t, { inspiration: $('#tinsp').value.trim() });
+  $('#tnotes').onchange = () => editTpl(t, { notes: $('#tnotes').value.trim() });
+  $('#gimg')?.addEventListener('click', () => openSheet(`<img src="${guide.img}" alt="" style="width:100%;border-radius:12px;background:#fff;display:block">`));
   $('#tkind')?.addEventListener('change', () => {
     if ($('#tkind').value === '+') return newKindSheet(k => { editTpl(t, { kind: k.id }); render(); });
     editTpl(t, { kind: $('#tkind').value });

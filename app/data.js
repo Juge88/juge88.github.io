@@ -354,3 +354,29 @@ function packStory(s) {
   return s;
 }
 function unpackStory(s) { STORY_DICT ||= buildStoryDict(); return String(s).replace(/\u00a7([0-9a-z]+);/g, (m, k) => STORY_DICT.get(k) ?? ''); }
+
+
+/* ---------- How-to guides for templates ---------- */
+// Shown on a template's page. Matched by name or group so they also find templates you imported yourself.
+const TEMPLATE_GUIDES = [
+  { test: t => /drill.?guide/i.test(t.name + ' ' + (t.stlName || '')), title: 'Drill guide',
+    print: 'Print 1 bar (already diagonal) and 2 carriers. Uses a 1/8″ bit.',
+    steps: ['Drop each carrier in through the center gate (the wide opening in the middle), foot first, then slide it out along the slot toward each end.',
+      'Set the spacing: line the carrier\'s cross-line up with the scale. 10 21/64″ is the star. Both carriers get the same number.',
+      'Mark a pencil centerline down the underside of the blank, and a mark at the middle.',
+      'Lay the bar on the blank. Look down the slot: the pencil line should be centered in it. Center the notches on the bar edge over the middle mark.',
+      'Clamp the bar across the blank in the middle section, between the carriers, not on them.',
+      'Drill through each carrier hole with the 1/8″ bit. Use a stop collar for depth.',
+      'Unclamp. The blade screws go in those two holes.'],
+    tip: 'If a carrier sticks or flops loose, the clearance needs a small tweak.', img: 'guide-drill.png', caption: 'Top view at 10 21/64″. Red shows the carriers.', untested: true },
+  { test: t => /blade.?guard/i.test(t.name + ' ' + (t.stlName || '')), title: 'Blade guard',
+    print: 'Final version: 226 mm long, 0.5 mm grip gap, printed in PETG.',
+    steps: [], img: 'guide-bladeguard.png', caption: 'Cross-section. The left is a 0.6 mm grip gap and the right is 0.5 mm. The final uses 0.5.' },
+  { test: t => t.group === 'push-pull', title: 'Oven push-pulls',
+    print: '',
+    steps: ['Dashed circles show the hole size, and the grey tapered punch marks where to punch.', 'The small holes run from 1/8″ up to 3/8″. The two big 5/8″ holes are the pulls.', 'The labeled hole marked “hang” is for a hook.'],
+    img: 'guide-pushpull.png', caption: 'Squirrel, fox and axe plates.', untested: true },
+  { test: t => t.group === 'kitchen-head', title: 'Kitchen heads', steps: [], tip: 'Heads carry the socket and handles carry the tail. Every head and handle shares one dovetail.', untested: true },
+  { test: t => t.group === 'kitchen-handle', title: 'Kitchen handles', steps: [], tip: 'Handles carry the tail and heads carry the socket. Every head and handle shares one dovetail.' }
+];
+const guideFor = t => TEMPLATE_GUIDES.find(g => g.test(t));
