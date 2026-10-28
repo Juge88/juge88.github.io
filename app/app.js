@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -1011,104 +1011,6 @@ function dragList(box, onMove) {
   });
 }
 
-/* ---------- Build from a photo ---------- */
-// Draw a line across the strips in a photo; Bench reads the colors along it, finds where one strip ends and the next begins,
-// and picks the closest wood for each. It's a good first guess; any strip can be changed.
-const labOf = ([r, g, b]) => {
-  const f = c => { c /= 255; return c > .04045 ? Math.pow((c + .055) / 1.055, 2.4) : c / 12.92; };
-  const R = f(r), G = f(g), B = f(b);
-  const X = (R * .4124 + G * .3576 + B * .1805) / .95047, Y = R * .2126 + G * .7152 + B * .0722, Z = (R * .0193 + G * .1192 + B * .9505) / 1.08883;
-  const h = t => t > .008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
-  return [116 * h(Y) - 16, 500 * (h(X) - h(Y)), 200 * (h(Y) - h(Z))];
-};
-const hexRgb = h => { h = String(h).replace('#', ''); if (h.length === 3) h = [...h].map(c => c + c).join(''); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) || 0); };
-const dE = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-function stripsFromLine(img, a, b, sens) {
-  const c = document.createElement('canvas'); c.width = img.naturalWidth || img.width; c.height = img.naturalHeight || img.height;
-  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
-  const data = g.getImageData(0, 0, c.width, c.height).data, N = 320;
-  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
-  const rgb = [];
-  for (let i = 0; i < N; i++) {
-    const t = i / (N - 1), x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t; let r = 0, gg = 0, bb = 0, n = 0;
-    for (let k = -4; k <= 4; k++) { const px = Math.round(x + nx * k), py = Math.round(y + ny * k); if (px < 0 || py < 0 || px >= c.width || py >= c.height) continue; const o = (py * c.width + px) * 4; r += data[o]; gg += data[o + 1]; bb += data[o + 2]; n++; }
-    rgb.push(n ? [r / n, gg / n, bb / n] : (rgb[i - 1] || [128, 128, 128]));
-  }
-  const lab = rgb.map(labOf), W = 5, T = sens;
-  const mean = (i0, i1) => { const m = [0, 0, 0]; let n = 0; for (let i = Math.max(0, i0); i < Math.min(N, i1); i++) { m[0] += lab[i][0]; m[1] += lab[i][1]; m[2] += lab[i][2]; n++; } return n ? m.map(x => x / n) : m; };
-  const score = lab.map((_, i) => i < W || i > N - W ? 0 : dE(mean(i - W, i), mean(i, i + W)));
-  let cuts = [0];
-  for (let i = W; i < N - W; i++) if (score[i] > T && score[i] >= score[i - 1] && score[i] > score[i + 1] && i - cuts[cuts.length - 1] >= 4) cuts.push(i);
-  cuts.push(N);
-  let segs = cuts.slice(0, -1).map((s, k) => ({ s, e: cuts[k + 1] }));
-  const col = sg => { const lo = sg.s + Math.floor((sg.e - sg.s) * .2), hi = Math.max(lo + 1, sg.e - Math.floor((sg.e - sg.s) * .2)); return mean(lo, hi); };
-  segs.forEach(sg => sg.lab = col(sg));
-  for (let again = true; again && segs.length > 1;) {   // thin slivers join the neighbor they look most like
-    again = false; const k = segs.findIndex(sg => sg.e - sg.s < 5);
-    if (k >= 0) { const l = segs[k - 1], r = segs[k + 1], toL = l && (!r || dE(l.lab, segs[k].lab) <= dE(r.lab, segs[k].lab)); const m = toL ? l : r; m.s = Math.min(m.s, segs[k].s); m.e = Math.max(m.e, segs[k].e); m.lab = col(m); segs.splice(k, 1); again = true; }
-  }
-  return segs.map(sg => ({ f: (sg.e - sg.s) / N, lab: sg.lab }));
-}
-function nearestWood(lab, pool) {
-  let best = null, bd = 1e9;
-  for (const w of pool) { const d = dE(lab, w._lab || (w._lab = labOf(hexRgb(w.color)))); if (d < bd) { bd = d; best = w; } }
-  return best;
-}
-async function scanPhoto(list, widths, done) {
-  const [f] = await pickFiles('image/*'); if (!f) return;
-  let img, photoUrl; try { photoUrl = await resizePhoto(f, 1000); img = await loadImg(photoUrl); } catch (e) {} if (!img) return toast('Could not read that photo');
-  const pool = shopWoods().length >= 2 ? shopWoods() : allWoods();
-  let line = null, sens = 12, segs = [], ids = [], useColors = true;
-  openSheet(`<div class="kp-title"><h2>Build from a photo</h2></div>
-    <p class="small muted" style="margin:0 0 8px">Drag a line across the strips, from one edge of the knife to the other. Keep the line inside the wood.</p>
-    <canvas id="scCv" class="sc-cv"></canvas>
-    <div id="scRes"></div>`);
-  const cv = $('#scCv'); cv.width = img.naturalWidth || img.width; cv.height = img.naturalHeight || img.height;
-  const draw = () => {
-    const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
-    if (line) { g.lineWidth = Math.max(3, cv.width / 220); g.strokeStyle = '#fff'; g.shadowColor = '#000'; g.shadowBlur = 6; g.beginPath(); g.moveTo(line.a.x, line.a.y); g.lineTo(line.b.x, line.b.y); g.stroke(); g.shadowBlur = 0; g.fillStyle = '#e8b15f'; [line.a, line.b].forEach(q => { g.beginPath(); g.arc(q.x, q.y, g.lineWidth * 1.7, 0, 7); g.fill(); }); }
-  };
-  const pt = e => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * cv.width / r.width, y: (e.clientY - r.top) * cv.height / r.height }; };
-  const total = () => { const t = widths.reduce((a, x) => a + x, 0); return t > 0.5 ? t : 3.5; };
-  const results = () => {
-    const el = $('#scRes');
-    if (!line) { el.innerHTML = ''; return; }
-    segs = stripsFromLine(img, line.a, line.b, sens);
-    ids = segs.map(sg => nearestWood(sg.lab, pool).id);
-    for (let i = ids.length - 1; i > 0; i--) if (ids[i] === ids[i - 1]) { segs[i - 1].f += segs[i].f; segs.splice(i, 1); ids.splice(i, 1); }   // same wood twice in a row is one strip
-    const opts = id => pool.concat(woodById(id) && !pool.some(w => w.id === id) ? [woodById(id)] : []).map(w => `<option value="${esc(w.id)}" ${w.id === id ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
-    el.innerHTML = `<div class="strip sc-strip">${segs.map((sg, i) => `<i style="background:${woodById(ids[i]).color};flex:${sg.f}"></i>`).join('')}</div>
-      <div class="lk-bar"><span class="small muted">${segs.length} strips found</span><span><button class="btn small" id="scLess">Fewer</button> <button class="btn small" id="scMore">More</button></span></div>
-      <button class="swrow" id="scCol" style="padding:6px 2px"><div class="grow"><div class="t">Draw it in the colors from the photo</div><div class="s">So it looks like the real one. The wood names are for the story.</div></div><span class="switch ${useColors ? 'on' : ''}"><i></i></span></button>
-      <div class="card flush">${segs.map((sg, i) => `<div class="strow"><div class="who" style="padding-left:8px"><span class="sc-dot"></span><div class="grow"><div class="t">${i + 1}.</div></div></div><select data-sc="${i}">${opts(ids[i])}</select></div>`).join('')}</div>
-      <div class="kp-go"><button class="btn" id="scAgain">Draw again</button><button class="btn primary" id="scOk">Use these</button></div>`;
-    $$('.sc-dot', el).forEach((d, i) => { const c = segs[i].lab; d.style.background = `rgb(${labToRgb(c).join(',')})`; });
-    $$('[data-sc]', el).forEach(s => s.onchange = () => { ids[+s.dataset.sc] = s.value; $('.sc-strip', el).children[+s.dataset.sc].style.background = woodById(s.value).color; });
-    $('#scCol').onclick = () => { useColors = !useColors; $('#scCol .switch').classList.toggle('on', useColors); };
-    $('#scLess').onclick = () => { sens = Math.min(60, sens * 1.35); results(); };
-    $('#scMore').onclick = () => { sens = Math.max(3, sens / 1.35); results(); };
-    $('#scAgain').onclick = () => { line = null; draw(); results(); };
-    $('#scOk').onclick = () => {
-      if (ids.length > 40) return toast('That is more than 40 strips. Tap Fewer.');
-      const T = total(), ws = segs.map(sg => Math.max(1 / 32, Math.round(sg.f * T * 32) / 32));
-      const hex = q => '#' + q.map(x => x.toString(16).padStart(2, '0')).join(''), lift = q => q.map(x => Math.round(x + (255 - x) * .1));
-      const cols = useColors ? segs.map(sg => { const q = labToRgb(sg.lab); return [hex(q), hex(lift(q))]; }) : null;
-      list.splice(0, list.length, ...ids); widths.splice(0, widths.length, ...ws); closeSheet(); done(cols, photoUrl); toast('Strips set. Fix any that look off.');
-    };
-  };
-  let drag = false;
-  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); const p = pt(e); line = { a: p, b: p }; drag = true; draw(); $('#scRes').innerHTML = ''; };
-  cv.onpointermove = e => { if (!drag) return; line.b = pt(e); draw(); };
-  cv.onpointerup = cv.onpointercancel = () => { if (!drag) return; drag = false; if (Math.hypot(line.b.x - line.a.x, line.b.y - line.a.y) < cv.width * .05) { line = null; draw(); return; } results(); };
-  draw();
-}
-function labToRgb([L, a, b]) {
-  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200, inv = t => t * t * t > .008856 ? t * t * t : (t - 16 / 116) / 7.787;
-  const X = inv(fx) * .95047, Y = inv(fy), Z = inv(fz) * 1.08883;
-  const lin = [X * 3.2406 + Y * -1.5372 + Z * -.4986, X * -.9689 + Y * 1.8758 + Z * .0415, X * .0557 + Y * -.204 + Z * 1.057];
-  return lin.map(c => Math.round(255 * Math.max(0, Math.min(1, c > .0031308 ? 1.055 * Math.pow(c, 1 / 2.4) - .055 : 12.92 * c))));
-}
-
 /* ---------- Match the look ---------- */
 // Slide a dial until each strip looks like the real one. The piece redraws as you go, so no measuring.
 function matchLook(list, widths, art, done) {
@@ -1175,7 +1077,6 @@ function woodPicker(el, list, onChange, widths, art, onCols) {
         <button class="wood other" id="otherWood"><span class="sw plus">+</span><span class="wn">Other wood</span></button></div>
       <div class="sec" style="margin-top:18px;font-size:16px">Strip order <span class="small muted">${list.length ? 'drag to reorder · tap to remove' : ''}</span></div>
       <div class="order">${list.length ? list.map((id, i) => { const w = woodById(id) || { name: '?', color: '#555' }; return `<div class="o" data-i="${i}"><b style="background:${w.color}">${i + 1}</b>${esc(w.name)}</div>`; }).join('') : '<div class="empty">Tap woods in the order the strips go. Tap one again if it repeats.</div>'}</div>
-      ${W ? '<div class="tools-row"><button class="btn small primary" id="swPhoto">Build it from a photo</button></div>' : ''}
       ${W && list.length ? `<div class="sec" style="margin-top:18px;font-size:16px">Strip thickness <span class="small muted">blank ${fracHTML(widths.reduce((a, x) => a + x, 0))} wide</span></div>
       <div class="card flush">${list.map((id, i) => { const w = woodById(id) || { name: '?', color: '#555' }; return `<div class="strow"><div class="who" style="padding-left:8px">${swatch(w, 26, 8)}<div class="grow"><div class="t">${i + 1}. ${esc(w.name)}</div></div></div><button class="meas inline" data-sww="${i}"><span class="mv">${fracHTML(widths[i])}</span></button></div>`; }).join('')}</div>
       <div class="tools-row">${art ? '<button class="btn small primary" id="swLook">Match it to the real one</button>' : ''}<button class="btn small" id="swSame">Make them all the same</button></div>` : ''}`;
@@ -1183,7 +1084,6 @@ function woodPicker(el, list, onChange, widths, art, onCols) {
     $('#otherWood', el).onclick = () => woodSearchSheet(add);
     $$('.o', el).forEach(dragChip);
     $$('[data-sww]', el).forEach(b => b.onclick = () => { const i = +b.dataset.sww; measure({ title: `Strip ${i + 1}: ${woodName(list[i])}`, value: widths[i], min: 1 / 32, max: 6, quick: [.125, .25, .375, .5, .625, .75, 1], onSet: v => { widths[i] = v; onChange(list); draw(); } }); });
-    $('#swPhoto', el)?.addEventListener('click', () => scanPhoto(list, widths, (cols, url) => { onCols?.(cols, url); onChange(list); draw(); }));
     $('#swLook', el)?.addEventListener('click', () => matchLook(list, widths, art, () => { onChange(list); draw(); }));
     $('#swSame', el)?.addEventListener('click', () => measure({ title: 'Every strip', value: widths[0], min: 1 / 32, max: 6, quick: [.25, .375, .5, .625, .75, 1], onSet: v => { widths.fill(v); onChange(list); draw(); } }));
   }
