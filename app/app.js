@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.8.7';
+const APP_VERSION = '1.8.8';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -268,18 +268,21 @@ const an = w => /^[aeiou]/i.test(w || '') ? 'an' : 'a';
 function historyKnown() { const nos = S.pieces.map(q => q.no); return nos.length ? Math.min(...nos) <= 1 : (S.settings.nextNumber || 1) <= 1; }
 function comboKey(ids) { return [...new Set(ids)].sort().join('+'); }
 function comboBefore(p) { const key = comboKey(p.woods); return S.pieces.filter(q => q.id !== p.id && q.no < p.no && comboKey(q.woods) === key).length; }
-// true = say it's the first with this combination; false = say nothing
-function comboIsFirst(p) {
-  if (p.firstCombo === true) return true;
-  if (p.firstCombo === false) return false;
-  return historyKnown() && comboBefore(p) === 0;
+// What Bench knows about this combination: 'repeat' (logged before), 'first' (sure, or you said so),
+// 'ask' (nothing logged before, but pieces from before Bench could exist) or 'no' (you said it isn't)
+function comboState(p) {
+  if (p.woods.length < 2) return 'none';
+  if (p.firstCombo === false) return 'no';
+  if (comboBefore(p) > 0) return 'repeat';
+  if (p.firstCombo === true || historyKnown()) return 'first';
+  return 'ask';
 }
+function comboIsFirst(p) { return comboState(p) === 'first'; }
 function laminationNotes(p) {
-  if (p.woods.length < 2) return [];
-  if (p.firstCombo === true) return ['It is the first piece from the shop with this combination of woods.'];
-  if (p.firstCombo === false || !historyKnown()) return [];
-  const before = comboBefore(p);
-  return [before === 0 ? 'It is the first piece from the shop with this combination of woods.' : `It is only the ${ordinal(before + 1)} piece from the shop with this mix of woods.`];
+  const st = comboState(p);
+  if (st === 'first') return ['It is the first piece from the shop with this combination of woods.'];
+  if (st === 'repeat') return [`It is only the ${ordinal(comboBefore(p) + 1)} piece from the shop with this mix of woods.`];
+  return [];
 }
 // The board's own sentences: how it's laid out, its size, and its finishing touches
 function boardStory(bd) {
@@ -406,6 +409,8 @@ function pagePayload(p) {
     d: p.date ? monthYear(p.date) : '', f: p.finish === 'Unfinished' ? '' : (p.finish || ''),
     m: st.maker || '', sh: st.shop || '', s: packStory(storyOf(p))
   };
+  const shown = (p.buildPhotos || []).filter(b => !b.hide).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  if (shown.length) o.ph = shown.map(b => [b.id, b.caption || '', b.date ? new Date(b.date + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '']);
   const ix = id => Math.max(0, p.woods.indexOf(id)).toString(36);
   if (ts.length && ts.every(x => x.builtin)) { o.tp = ts.map(x => x.code); if (p.angle) o.ag = p.angle; }
   const sw = stripW(p); if (sw && new Set(sw).size > 1) o.sw = sw.map(x => +x.toFixed(4));
@@ -418,7 +423,7 @@ function pagePayload(p) {
   }
   return o;
 }
-async function pageHash(p) { return '#' + b64url(await deflate(JSON.stringify(pagePayload(p)))); }
+async function pageHash(p) { const o = pagePayload(p); delete o.ph; return '#' + b64url(await deflate(JSON.stringify(o))); }   // photos only travel with the short link
 async function pageLink(p) {
   const base = (S.settings.pageUrl || '').trim().replace(/#.*$/, ''); if (!base) return null;
   if (ghOn() && p.pubId && p.pubHash === pubHash(p)) return base + '#' + p.pubId;   // short link: the details live on the page
@@ -500,24 +505,44 @@ async function appMirrorFiles() {
   } catch (e) {}
   return out;
 }
+// Progress photos go on the web page smaller than they sit on the phone, so the page loads fast
+function webPhoto(dataUrl, max = 1100) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { const k = Math.min(1, max / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); res(c.toDataURL('image/jpeg', 0.8).split(',')[1]); };
+    img.onerror = rej; img.src = dataUrl;
+  });
+}
 let ghQueue = Promise.resolve();
 function publishPieces(list) {
   const run = async () => {
-    const g = S.settings.gh, files = [], done = [], used = new Set(S.pieces.map(q => q.pubId).filter(Boolean));
+    const g = S.settings.gh, files = [], done = [], used = new Set(S.pieces.map(q => q.pubId).filter(Boolean)), sent = new Set(g.sent || []), sending = new Set();
     if (g.pageVer !== pageVersion()) files.push({ path: 'index.html', content: await storyPageHtml() }, { path: '.nojekyll', content: '\n' }, ...await appMirrorFiles());
     for (const p of list) {
       const json = JSON.stringify(pagePayload(p)), h = strHash(json);
       if (p.pubId && p.pubHash === h) continue;
       const id = p.pubId || newPubId(used);
       files.push({ path: `p/${id}.json`, content: json }); done.push([p, id, h]);
+      for (const b of (p.buildPhotos || [])) {
+        if (b.hide || sent.has(b.id) || sending.has(b.id)) continue;
+        const d = await photoGet(b.id); if (!d) continue;
+        files.push({ path: `ph/${b.id}.jpg`, b64: await webPhoto(d) }); sending.add(b.id);
+      }
     }
     if (!files.length) return;
     await ghCommit(files, done.length ? 'Story for ' + done.map(([p]) => 'No. ' + pad(p.no)).join(', ') : 'Update the story page');
     if (files.some(f => f.path === 'index.html')) g.pageVer = pageVersion();
     done.forEach(([p, id, h]) => { p.pubId = id; p.pubHash = h; });
+    if (sending.size) g.sent = [...sent, ...sending];
     save();
   };
   return ghQueue = ghQueue.catch(() => {}).then(run);
+}
+// Keeps pages that are already out there matching the app, a few seconds after you change something
+let apT;
+function autoPublish(delay = 0) {
+  clearTimeout(apT);
+  apT = setTimeout(() => { if (!ghOn()) return; publishPieces(S.pieces.filter(p => p.pubId && p.pubHash !== pubHash(p))).catch(() => {}); }, delay);
 }
 // Upload what's needed, then hand back the links. No internet? The long link still works.
 async function readyLinks(list) {
@@ -1266,7 +1291,7 @@ VIEWS.piece = ({ id }) => {
   $('#qr').onclick = () => qrSheet(p);
   $('#addBuild').onclick = async () => {
     const ids = []; await addPhotos(ids); if (!ids.length) return;
-    ids.forEach(i => p.buildPhotos.push({ id: i, date: today(), caption: '' })); save(); render();
+    ids.forEach(i => p.buildPhotos.push({ id: i, date: today(), caption: '' })); save(); autoPublish(15000); render();
     buildPhotoSheet(p, p.buildPhotos.find(b => b.id === ids[0]));
   };
   $$('[data-b]', v).forEach(b => b.onclick = () => buildPhotoSheet(p, p.buildPhotos.find(x => x.id === b.dataset.b)));
@@ -1293,10 +1318,12 @@ async function buildPhotoSheet(p, b) {
   openSheet(`<h2>Build photo</h2><div class="hero" style="aspect-ratio:auto"><img id="bimg" alt=""></div>
     <label class="f">Caption</label><input id="bcap" value="${esc(b.caption || '')}" placeholder="e.g. Glue-up, strips 1–7">
     <label class="f">Date</label><input id="bdate" type="date" value="${esc(b.date || today())}">
+    <button class="swrow" id="bshow" style="margin-top:6px"><div class="grow"><div class="t">Show on the story page</div><div class="s">Customers see it under the story when they scan the tag</div></div><span class="switch ${b.hide ? '' : 'on'}"><i></i></span></button>
     <div class="row" style="margin-top:16px"><button class="btn danger" id="bdel">Remove</button><button class="btn primary" id="bok">Save</button></div>`);
   $('#bimg').src = await photoGet(b.id) || '';
-  $('#bok').onclick = () => { b.caption = $('#bcap').value.trim(); b.date = $('#bdate').value; save(); closeSheet(); render(); };
-  $('#bdel').onclick = () => { p.buildPhotos = p.buildPhotos.filter(x => x !== b); photoDel(b.id); save(); closeSheet(); render(); };
+  $('#bshow').onclick = () => { b.hide = !b.hide; $('#bshow .switch').classList.toggle('on', !b.hide); };
+  $('#bok').onclick = () => { b.caption = $('#bcap').value.trim(); b.date = $('#bdate').value; save(); autoPublish(8000); closeSheet(); render(); };
+  $('#bdel').onclick = () => { p.buildPhotos = p.buildPhotos.filter(x => x !== b); photoDel(b.id); save(); autoPublish(8000); closeSheet(); render(); };
 }
 function storySheet(p) {
   openSheet(`<h2>Story</h2><textarea id="st" style="min-height:300px">${esc(storyOf(p))}</textarea>
@@ -1737,7 +1764,7 @@ VIEWS.editPiece = ({ id }, frame) => {
     <div class="tray"><div class="tray-h">About this one</div>
       <label class="f">What's special about it? <span>(optional, goes in the story)</span></label>
       <textarea id="special" style="min-height:70px" placeholder="e.g. The cherry came from my grandpa's tree">${esc(p.special)}</textarea>
-      <button class="swrow" id="firstCombo" style="padding:10px 2px 4px"><div class="grow"><div class="t">First time I've made this combination</div><div class="s">Adds “the first piece from the shop with this combination of woods” to the story</div></div><span class="switch ${comboIsFirst(p) ? 'on' : ''}"><i></i></span></button>
+      <div id="comboRow"></div>
       <label class="f">Finished photos</label><div class="photos" id="photos"></div></div>
     <div class="tray"><div class="tray-h">Details</div>
       <div class="row"><div><label class="f" style="margin-top:0">Number</label><input id="no" inputmode="numeric" value="${p.no}"></div><div><label class="f" style="margin-top:0">Date</label><input id="date" type="date" value="${esc(p.date)}"></div></div>
@@ -1754,7 +1781,9 @@ VIEWS.editPiece = ({ id }, frame) => {
     p.size = $('#size')?.value.trim() || ''; p.price = $('#price').value.trim(); p.cost = $('#cost').value.trim(); p.notes = $('#notes').value; p.special = $('#special').value;
   };
   $$('[data-t]', v).forEach(b => b.onclick = () => { readFields(); if (b.dataset.t === '+') return go('editType', {}); p.type = b.dataset.t; if (typeById(p.type).bowl && !p.bowl) { p.bowl = B.defaults(contrastPair(S.shop)); p.woods = bowlWoods(p.bowl); } if (typeById(p.type).board && !p.board) { p.board = newBoard(); p.woods = BD.woods(p.board); } render(); });
+  let comboRedraw = () => {};
   const drawPreview = () => {
+    try { comboRedraw(); } catch (e) {}
     const art = pieceArt(p, viewMode);
     if (dock) {
       const tag = type.board ? dimsHTML(p.board) : `${fracHTML(p.bowl.D)} × ${fracHTML(p.bowl.H)}`;
@@ -1789,7 +1818,25 @@ VIEWS.editPiece = ({ id }, frame) => {
     $('#addPh').onclick = async () => { await addPhotos(p.photos); drawPhotos(); };
   };
   drawPhotos();
-  $('#firstCombo').onclick = () => { const now = !comboIsFirst(p); p.firstCombo = now; $('#firstCombo .switch').classList.toggle('on', now); };
+  const drawCombo = () => {
+    const st = comboState(p), el = $('#comboRow'); if (!el) return;
+    const when = q => q ? `No. ${pad(q.no)}` : '';
+    if (st === 'none') { el.innerHTML = ''; return; }
+    if (st === 'repeat') {
+      const prev = S.pieces.filter(q => q.id !== p.id && q.no < p.no && comboKey(q.woods) === comboKey(p.woods)), n = prev.length + 1;
+      el.innerHTML = `<p class="note" style="margin:10px 0 0">Bench has this mix of woods logged before (${prev.slice(-3).map(when).join(', ')}), so the story says it's the ${ordinal(n)}.</p>`; return;
+    }
+    if (st === 'ask' || st === 'no' || (st === 'first' && !historyKnown())) {
+      const first = p.firstCombo === true, no = p.firstCombo === false;
+      el.innerHTML = `<div style="margin-top:10px"><div class="t" style="font-weight:600">First time you've made this mix of woods?</div>
+        <div class="s muted small" style="margin:2px 0 8px">Bench hasn't logged it before, but you made pieces before Bench. Answer once and it remembers for next time.</div>
+        <div class="seg" id="cmbSeg"><button data-c="1" class="${first ? 'on' : ''}">Yes, first time</button><button data-c="0" class="${no ? 'on' : ''}">No, made it before</button></div></div>`;
+      $$('#cmbSeg button', el).forEach(b => b.onclick = () => { p.firstCombo = b.dataset.c === '1'; drawCombo(); });
+      return;
+    }
+    el.innerHTML = `<p class="note" style="margin:10px 0 0">First time you've logged this mix of woods. The story says so.</p>`;
+  };
+  drawCombo(); comboRedraw = drawCombo;
   $$('[data-s]', v).forEach(b => b.onclick = () => { p.status = b.dataset.s; $$('[data-s]', v).forEach(x => x.classList.toggle('on', x === b)); });
   $('#saveP').onclick = () => {
     readFields();
@@ -1801,7 +1848,7 @@ VIEWS.editPiece = ({ id }, frame) => {
     const i = S.pieces.findIndex(x => x.id === p.id), was = i >= 0 ? S.pieces[i].status : 'building';
     if (i >= 0) { S.pieces[i].photos.filter(ph => !p.photos.includes(ph)).forEach(photoDel); S.pieces[i] = p; } else S.pieces.push(p);
     S.settings.nextNumber = Math.max(S.settings.nextNumber, p.no + 1);
-    save(); frame.guard = null; stack.pop();
+    save(); autoPublish(10000); frame.guard = null; stack.pop();
     if (i < 0) { stack.push({ view: 'piece', params: { id: p.id } }); toast(`Logged No. ${pad(p.no)}`); }
     render(true); scrollTo(0, 0);
     if (p.status === 'available' && was === 'building' && !p.printed) askPrint(p);
@@ -2548,4 +2595,4 @@ $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
 load();
 switchTab('pieces');
 // After an app update, quietly refresh the online story page so new pieces draw right
-if (ghOn() && S.settings.gh.pageVer !== pageVersion()) setTimeout(() => publishPieces([]).catch(() => {}), 5000);
+if (ghOn()) setTimeout(() => autoPublish(), 5000);
