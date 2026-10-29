@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.8.8';
+const APP_VERSION = '1.9.0';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -1221,8 +1221,13 @@ VIEWS.pieces = () => {
     let list = [...S.pieces].sort((a, b) => b.no - a.no);
     if (pieceFilter.startsWith('t:')) list = list.filter(p => typeName(p) === pieceFilter.slice(2));
     else if (pieceFilter !== 'all') list = list.filter(p => p.status === pieceFilter);
-    const q = norm(pieceQuery); if (q) list = list.filter(p => q.split(' ').every(w => pieceText(p).includes(w)));
+    const q = norm(pieceQuery);
+    // Sold pieces live in the Gallery (and the Sold filter) so this list stays the work in front of you; searching still finds them
+    const soldHidden = pieceFilter === 'all' && !q ? list.filter(p => p.status === 'sold').length : 0;
+    if (soldHidden) list = list.filter(p => p.status !== 'sold'); if (q) list = list.filter(p => q.split(' ').every(w => pieceText(p).includes(w)));
     $('#plist').innerHTML = list.map(pieceCard).join('') || `<p class="muted center" style="margin-top:30px">${q ? 'Nothing matches that.' : 'Nothing here yet.'}</p>`;
+    if (soldHidden) $('#plist').insertAdjacentHTML('beforeend', `<p class="note center" style="margin:14px 0 0">${soldHidden} sold ${soldHidden === 1 ? 'piece is' : 'pieces are'} in the Gallery. <button class="btn small" id="showSold">Show sold</button></p>`);
+    $('#showSold')?.addEventListener('click', () => { pieceFilter = 'sold'; $$('[data-f]', v).forEach(x => x.classList.toggle('on', x.dataset.f === 'sold')); draw(); });
     $$('.piece', v).forEach(b => b.onclick = () => go('piece', { id: b.dataset.id }));
     fillPhotos($('#plist'));
   };
@@ -1312,7 +1317,8 @@ function duplicatePiece(p) {
   stack.push({ view: 'editPiece', params: {}, draft: d }); render(true); scrollTo(0, 0);
   toast(`Copy of No. ${pad(p.no)}. Change anything, then Save.`);
 }
-const nextNo = () => Math.max(S.settings.nextNumber, ...S.pieces.map(x => x.no + 1));
+// Always one more than your highest piece, so deleting a test piece gives its number back. The Settings number only matters before the first piece.
+const nextNo = () => S.pieces.length ? Math.max(...S.pieces.map(x => x.no)) + 1 : (S.settings.nextNumber || 1);
 async function buildPhotoSheet(p, b) {
   if (!b) return;
   openSheet(`<h2>Build photo</h2><div class="hero" style="aspect-ratio:auto"><img id="bimg" alt=""></div>
@@ -1847,7 +1853,6 @@ VIEWS.editPiece = ({ id }, frame) => {
     if (p.status === 'sold' && !p.soldDate) p.soldDate = today();
     const i = S.pieces.findIndex(x => x.id === p.id), was = i >= 0 ? S.pieces[i].status : 'building';
     if (i >= 0) { S.pieces[i].photos.filter(ph => !p.photos.includes(ph)).forEach(photoDel); S.pieces[i] = p; } else S.pieces.push(p);
-    S.settings.nextNumber = Math.max(S.settings.nextNumber, p.no + 1);
     save(); autoPublish(10000); frame.guard = null; stack.pop();
     if (i < 0) { stack.push({ view: 'piece', params: { id: p.id } }); toast(`Logged No. ${pad(p.no)}`); }
     render(true); scrollTo(0, 0);
@@ -2452,7 +2457,7 @@ VIEWS.settings = () => {
     <label class="f">Shop name <span>(optional)</span></label><input id="shop" value="${esc(st.shop)}" placeholder="Leave blank to use your name">
     <label class="f">Email <span>(printed on cards)</span></label><input id="email" type="email" inputmode="email" value="${esc(st.email || '')}" placeholder="you@example.com">
     <p class="note" style="margin:-4px 0 10px">Starting at a higher number is fine, like 25. Pieces made before Bench aren't counted, so a story only says "the first piece with this combination" when you turn that on for the piece.</p>
-    <div class="row"><div><label class="f">Next piece number</label><input id="nextNo" inputmode="numeric" value="${st.nextNumber}"></div><div><label class="f">Default finish</label><select id="dfin">${S.finishes.map(f => `<option ${f.name === st.defaultFinish ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></div></div>
+    <div class="row"><div><label class="f">${S.pieces.length ? 'Next piece number' : 'First piece number'}</label><input id="nextNo" inputmode="numeric" value="${S.pieces.length ? nextNo() : st.nextNumber}" ${S.pieces.length ? 'disabled' : ''}></div><div><label class="f">Default finish</label><select id="dfin">${S.finishes.map(f => `<option ${f.name === st.defaultFinish ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></div></div>
     <label class="f">End of every listing</label><textarea id="lend" style="min-height:70px">${esc(st.listingEnd)}</textarea></div>
     <div class="tray"><div class="tray-h">Story page for QR codes</div>
       ${ghOn() ? `<p class="note" style="margin:-6px 0 10px">Connected. Pieces go online by themselves when you print a QR, and the page updates itself after app updates.</p>
