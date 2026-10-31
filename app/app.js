@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '2.0.1';
+const APP_VERSION = '2.0.2';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -1060,6 +1060,7 @@ const ICON = {
   grip: '<svg viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/></svg>',
   close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  calc: '<svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M8.5 7h7"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01M8.5 15h.01M12 15h.01M15.5 15h.01M8.5 18h.01M12 18h.01M15.5 18h.01" stroke-width="2.6"/></svg>',
   chev: '<svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>',
   check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   tag: '<svg viewBox="0 0 24 24"><path d="M3.5 12.5V4.5h8l9 9-8 8z"/><circle cx="8" cy="9" r="1.5"/></svg>',
@@ -1358,7 +1359,7 @@ VIEWS.pieces = () => {
     $('#first').onclick = () => go('editPiece', {});
     return;
   }
-  setTop('Pieces', `<button class="icon" id="pSearch" aria-label="Search">${ICON.search}</button>`);
+  setTop('Pieces', `<button class="icon" id="pCalc" aria-label="Calculator">${ICON.calc}</button><button class="icon" id="pSearch" aria-label="Search">${ICON.search}</button>`); $('#pCalc').onclick = () => go('calc');
   const n = s => S.pieces.filter(p => p.status === s).length;
   const names = [...new Set(S.pieces.map(typeName))];
   const filters = [['all', 'Active', S.pieces.length - n('sold')], ['building', 'Building', n('building')], ['available', 'Finished', n('available')], ['sold', 'Sold', n('sold')], ...(names.length > 1 ? names.map(nm => ['t:' + nm, nm, S.pieces.filter(p => typeName(p) === nm && p.status !== 'sold').length]) : [])];
@@ -2760,8 +2761,135 @@ function rankCard(rows, fmt) {
   const max = Math.max(...rows.map(r => r[1]), 1);
   return `<div class="card flush">${rows.map(([name, n, extra, color]) => `<div class="rank">${color ? `<span style="width:12px;height:12px;border-radius:3px;flex:none;background:${color}"></span>` : ''}<span class="nm">${esc(name)}</span><span class="meter"><i style="width:${Math.round(100 * n / max)}%"></i></span><span class="val">${fmt(n, extra)}</span></div>`).join('')}</div>`;
 }
+// The tape from the measuring keypad, with the line under the pointer in red and a readout of the exact spot
+const fracPlain = x => { const a = Math.abs(x), ex = onGrid(a, 64), { w, n, d } = fracParts(ex ? a : Math.round(a * 32) / 32, ex ? 64 : 32); return `${ex ? '' : '≈ '}${x < -1e-9 ? '−' : ''}${w || !n ? w : ''}${w && n ? ' ' : ''}${n ? n + '/' + d : ''}″`; };
+function tapeDraw(cv, v, ppi) {
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (!W) return;
+  cv.width = W * dpr; cv.height = H * dpr; const g = cv.getContext('2d'); g.scale(dpr, dpr);
+  const c = W / 2, RED = '#c0281e', on = onGrid(v, 16), label = fracPlain(v);
+  g.font = '700 15px Archivo, sans-serif'; const pw = g.measureText(label).width + 22, py = H - 25;
+  for (let k = Math.ceil((v - c / ppi) * 16); k <= (v + c / ppi) * 16; k++) {
+    if (k < 0) continue;
+    const x = c + (k / 16 - v) * ppi, lvl = k % 16 === 0 ? 4 : k % 8 === 0 ? 3 : k % 4 === 0 ? 2 : k % 2 === 0 ? 1 : 0, here = on && Math.abs(k / 16 - v) < 1e-9;
+    const h = here ? Math.max(30, [8, 12, 17, 23, 32][lvl]) : [8, 12, 17, 23, 32][lvl];
+    g.strokeStyle = here ? RED : '#1f2a23'; g.globalAlpha = here || lvl === 4 ? 1 : .78; g.lineWidth = here ? 3 : lvl >= 3 ? 1.8 : 1.2;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); g.globalAlpha = 1;
+    if (lvl === 4 && Math.abs(x - c) > pw / 2 + 12) { g.fillStyle = k / 16 % 12 === 0 && k ? '#b3261e' : '#1f2a23'; g.font = '700 16px Archivo, sans-serif'; g.textAlign = 'center'; g.fillText(String(k / 16), x, 50); }
+  }
+  if (!on) { g.strokeStyle = RED; g.lineWidth = 1.6; g.beginPath(); g.moveTo(c, 0); g.lineTo(c, 30); g.stroke(); }   // between lines: a hairline at the exact spot
+  g.fillStyle = '#1f2a23'; g.beginPath(); g.roundRect ? g.roundRect(c - pw / 2, py, pw, 22, 11) : g.rect(c - pw / 2, py, pw, 22); g.fill();
+  g.fillStyle = '#ffffff'; g.font = '700 15px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label, c, py + 11.5); g.textBaseline = 'alphabetic';
+}
+/* ---------- Shop calculator ---------- */
+// Fractions in, fractions out: halve a board, split a span into thirds, add up a glue-up.
+// Results show to the 32nd, the closest 16th on the tape, and the decimal and millimeters.
+const TAPE_PPI = 96;   // pixels per inch on the calculator's tape
+const CALC = { acc: null, op: null, st: null, typed: false, expr: [], result: null, six: false };
+const calcBlank = () => ({ w: '0', n: 0, d: 16, dec: null });
+const calcVal = st => (+st.w || 0) + (st.dec != null ? (st.dec ? +('0.' + st.dec) : 0) : (st.n ? st.n / st.d : 0));
+// 6.71875 -> 6 23/32″, exact to the 64th; anything finer is rounded to the 32nd and marked ≈
+function fracFine(x, unit = '″') {
+  const neg = x < -1e-9; x = Math.abs(x);
+  const exact = onGrid(x, 64), den = exact ? 64 : 32, { w, n, d } = fracParts(exact ? x : Math.round(x * 32) / 32, den);
+  return `${exact ? '' : '≈ '}${neg ? '−' : ''}${w || !n ? w : ''}${n ? `<span class="fr${w ? '' : ' solo'}"><span class="nu">${n}</span><span class="sl">⁄</span><span class="de">${d}</span></span>` : ''}${unit}`;
+}
+function calcClosest16(x) {
+  if (onGrid(Math.abs(x), 16)) return '';
+  const a = Math.abs(x), lo = Math.floor(a * 16 + 1e-9) / 16, hi = lo + 1 / 16, sg = x < 0 ? '−' : '';
+  if (Math.abs(a - (lo + 1 / 32)) < 1e-9) return `Right between ${sg}${fracHTML(lo)} and ${sg}${fracHTML(hi)} on the tape`;
+  const near = Math.round(a * 16) / 16, off = Math.round((a - near) * 64);
+  return `Closest 16th: ${sg}${fracHTML(near)}, ${off ? `${fracFine(Math.abs(off) / 64, '″')} ${off > 0 ? 'over' : 'under'}` : `a hair ${a > near ? 'over' : 'under'}`}`;
+}
+const calcOps = { '+': (a, b) => a + b, '−': (a, b) => a - b, '×': (a, b) => a * b, '÷': (a, b) => b === 0 ? NaN : a / b };
+// a plain number when it is one (× 2), inches otherwise
+const calcTerm = (x, op) => (op === '×' || op === '÷') && Number.isInteger(x) ? String(x) : fracFine(x);
+VIEWS.calc = () => {
+  setTop('Calculator');
+  const c = CALC; c.st ||= calcBlank();
+  S.calcHist ||= [];
+  const v = $('#view');
+  v.innerHTML = `<div class="calc">
+    <div class="calc-disp"><div class="calc-expr" id="cx"></div><div class="calc-val" id="cv"></div><div class="calc-info" id="ci"></div></div>
+    <div class="ruler calc-tape" id="ctape"><canvas></canvas><div class="mark"></div></div>
+    <div class="calc-quick">${[['2', 'Half'], ['3', 'Third'], ['4', 'Quarter'], ['0.5', 'Double']].map(([k, l]) => `<button data-qd="${k}">${l}</button>`).join('')}</div>
+    <div class="calc-kp" id="ck"></div>
+    <div class="calc-go"><button class="btn" id="cac">Clear</button><div class="seg" id="cm"><button data-six="0">8ths</button><button data-six="1">16ths</button></div><button class="btn primary" id="ceq">=</button></div>
+    <div class="sec">Recent</div><div class="card flush" id="chist"></div>
+  </div>`;
+  const FR8 = [[1, 8], [5, 8], [1, 4], [3, 4], [3, 8], [7, 8], [1, 2], [0, 0]], FR16 = [[1, 16], [9, 16], [3, 16], [11, 16], [5, 16], [13, 16], [7, 16], [15, 16]];
+  const cur = () => c.typed ? calcVal(c.st) : c.result != null ? c.result : c.acc != null ? c.acc : calcVal(c.st);
+  const keys = () => {
+    const fr = c.six ? FR16 : FR8, dg = k => `<button data-k="${k}">${k}</button>`;
+    const fk = i => { const [n, d] = fr[i]; if (!n) return `<button class="fn" data-f="0">whole</button>`; const on = c.typed && c.st.dec == null && c.st.n === n && c.st.d === d; return `<button class="fk ${on ? 'on' : ''}" data-f="${n}/${d}">${fracHTML(n / d, '')}</button>`; };
+    const op = o => `<button class="op ${c.op === o && !c.typed ? 'on' : ''}" data-op="${o}">${o}</button>`;
+    $('#ck').innerHTML = [[1, 2, 3, 0, 1, '÷'], [4, 5, 6, 2, 3, '×'], [7, 8, 9, 4, 5, '−']].map(r => dg(r[0]) + dg(r[1]) + dg(r[2]) + '<i class="div"></i>' + fk(r[3]) + fk(r[4]) + '<i class="div"></i>' + op(r[5])).join('')
+      + `<button data-k=".">.</button>${dg(0)}<button class="fn" data-k="bk" aria-label="Backspace">⌫</button><i class="div"></i>${fk(6)}${fk(7)}<i class="div"></i>${op('+')}`;
+    $$('#cm [data-six]').forEach(b => b.classList.toggle('on', +b.dataset.six === +c.six));
+  };
+  const show = () => {
+    const err = c.result != null && !isFinite(c.result);
+    $('#cx').innerHTML = c.expr.map((t, j) => typeof t === 'number' ? calcTerm(t, c.expr[j - 1]) : `<span class="o">${t}</span>`).join(' ') + (c.result != null && c.expr.length > 1 ? ' <span class="o">=</span>' : '') || '&nbsp;';
+    const x = cur();
+    $('#cv').innerHTML = err ? 'Can’t divide by 0' : c.typed && c.st.dec != null ? `${c.st.w || 0}.${c.st.dec}″` : fracFine(x);
+    $('#cv').classList.toggle('res', c.result != null && !c.typed);
+    $('#ci').innerHTML = err || !x ? '&nbsp;' : [calcClosest16(x), `${+x.toFixed(3)}″ · ${(x * 25.4).toFixed(1)} mm`].filter(Boolean).join('<br>');
+    keys(); tapeDraw($('#ctape canvas'), err || !isFinite(x) ? 0 : Math.max(0, x), TAPE_PPI);
+    $('#chist').innerHTML = S.calcHist.length ? S.calcHist.map((h, i) => `<button class="listrow" data-h="${i}"><div class="grow"><div class="s">${h.t.map((t, j) => typeof t === 'number' ? calcTerm(t, h.t[j - 1]) : t).join(' ')} =</div><div class="t">${fracFine(h.r)}</div></div><span class="chip">Use</span></button>`).join('') : '<div class="listrow muted">Your last few answers show up here</div>';
+    $$('[data-h]', v).forEach(b => b.onclick = () => { const h = S.calcHist[+b.dataset.h]; Object.assign(c, { acc: null, op: null, st: calcBlank(), typed: false, expr: [], result: h.r }); show(); scrollTo({ top: 0, behavior: 'smooth' }); });
+  };
+  const remember = (t, r) => { if (!isFinite(r)) return; S.calcHist.unshift({ t, r: +r.toFixed(6) }); S.calcHist = S.calcHist.slice(0, 8); save(); };
+  // finish whatever is pending and return the value on screen
+  const settle = () => {
+    if (c.op && c.typed) { const b = calcVal(c.st), r = calcOps[c.op](c.acc, b); c.expr.push(b); remember([...c.expr], r); c.result = r; c.acc = null; c.op = null; c.typed = false; c.st = calcBlank(); return r; }
+    if (c.op && !c.typed) { c.expr.pop(); c.op = null; c.result = c.acc; c.acc = null; return c.result; }
+    return cur();
+  };
+  $('#ck').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return; haptic(4);
+    const k = b.dataset.k, f = b.dataset.f, o = b.dataset.op;
+    if (o) {
+      if (c.result != null && !isFinite(c.result)) return;
+      if (c.op && !c.typed) { c.op = o; c.expr[c.expr.length - 1] = o; return show(); }
+      const x = c.op ? calcOps[c.op](c.acc, calcVal(c.st)) : cur();
+      if (c.op) { c.expr.push(calcVal(c.st)); } else c.expr = [x];
+      if (!isFinite(x)) { c.result = x; c.op = null; c.typed = false; return show(); }
+      c.acc = x; c.op = o; c.expr.push(o); c.typed = false; c.result = null; c.st = calcBlank(); return show();
+    }
+    if (!c.typed && !c.op) { c.expr = []; c.result = null; }   // a new number after an answer starts fresh
+    if (!c.typed) { c.st = calcBlank(); c.typed = true; }
+    const st = c.st;
+    if (k === 'bk') { if (st.dec != null) { if (st.dec) st.dec = st.dec.slice(0, -1); else st.dec = null; } else if (st.n) st.n = 0; else st.w = st.w.slice(0, -1) || '0'; }
+    else if (k === '.') { if (st.dec == null) { st.dec = ''; st.n = 0; } }
+    else if (k !== undefined) { if (st.dec != null) { if (st.dec.length < 4) st.dec += k; } else if (st.w.length < 4) st.w = st.w === '0' ? k : st.w + k; }
+    else if (f !== undefined) { st.dec = null; if (f === '0') st.n = 0; else { const [n, d] = f.split('/').map(Number); st.n = n; st.d = d; } }
+    show();
+  };
+  $$('[data-qd]', v).forEach(b => b.onclick = () => {
+    const x = settle(); if (!isFinite(x)) return show();
+    const k = +b.dataset.qd, r = x / k, t = k < 1 ? [x, '×', 2] : [x, '÷', k];
+    c.expr = t; c.result = r; c.acc = null; c.op = null; c.typed = false; c.st = calcBlank(); remember(t, r); haptic(8); show();
+  });
+  $('#ceq').onclick = () => { if (c.op && c.typed) { settle(); show(); } };
+  $('#cac').onclick = () => { Object.assign(c, { acc: null, op: null, st: calcBlank(), typed: false, expr: [], result: null }); show(); };
+  $$('#cm [data-six]').forEach(b => b.onclick = () => { c.six = !!+b.dataset.six; show(); });
+  // Drag the tape to dial in a measurement: it snaps line to line, buzzing a little harder on each inch
+  const tp = $('#ctape'); let drag = null;
+  tp.onpointerdown = e => { tp.setPointerCapture(e.pointerId); const x = cur(); drag = { x: e.clientX, v: isFinite(x) ? Math.max(0, x) : 0 }; };
+  tp.onpointermove = e => {
+    if (!drag) return;
+    const nv = Math.max(0, Math.min(999, Math.round((drag.v - (e.clientX - drag.x) / TAPE_PPI) * 16) / 16));
+    if (c.typed && Math.abs(nv - calcVal(c.st)) < 1e-9) return;
+    if (!c.typed && Math.abs(nv - drag.v) < 1e-9 && Math.abs(e.clientX - drag.x) < 3) return;
+    if (!c.typed && !c.op) { c.expr = []; c.result = null; }
+    const q = fracParts(nv, 16); c.st = { w: String(q.w), n: q.n, d: q.d, dec: null }; c.typed = true;
+    haptic(onGrid(nv, 1) ? 14 : 4); show();
+  };
+  tp.onpointerup = tp.onpointercancel = () => { drag = null; };
+  show();
+};
+
 VIEWS.shop = () => {
-  setTop('Shop');
+  setTop('Shop', `<button class="icon" id="sCalc" aria-label="Calculator">${ICON.calc}</button>`); $('#sCalc').onclick = () => go('calc');
   const v = $('#view'), now = new Date(), yr = String(now.getFullYear());
   const months = Array.from({ length: 12 }, (_, i) => { const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
   const soldAll = S.pieces.filter(p => p.status === 'sold');

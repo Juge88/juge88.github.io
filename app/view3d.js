@@ -190,7 +190,7 @@ const V3 = (() => {
     close();
     if (typeof THREE === 'undefined') return;
     const ov = document.createElement('div'); ov.className = 'v3';
-    ov.innerHTML = `<div class="v3top"><div class="v3h"><div class="v3t"></div><div class="v3s" hidden></div></div><button class="v3x" aria-label="Close">✕</button></div>
+    ov.innerHTML = `<div class="v3top"><div class="v3h"><div class="v3t"></div><div class="v3s" hidden></div></div><button class="v3x" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
       <canvas></canvas><div class="v3nav" hidden><button class="v3p" aria-label="Previous"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button><span class="v3n"></span><button class="v3q" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></div><div class="v3hint">Drag to turn it · pinch to zoom · double-tap to reset</div>`;
     document.body.appendChild(ov);
     const canvas = ov.querySelector('canvas');

@@ -1409,7 +1409,7 @@ if (typeof module !== 'undefined') module.exports = BD;
 /* ---------- Wood library ---------- */
 // [id, name, color, grain color, origin, story]
 const WOOD_LIBRARY = [
-  ['walnut', 'Walnut', '#4a3226', '#5e4030', 'Eastern United States', 'Black walnut grows across the eastern United States. Its deep chocolate color has made it a favorite of furniture makers for generations, and it mellows to a warm, honeyed brown over the years.'],
+  ['walnut', 'Walnut', '#4a3226', '#5e4030', 'Eastern United States and the West Coast', 'Black walnut grows across the eastern United States, and walnut also grows along the West Coast, from the valleys of California up into Oregon. Its deep chocolate color has made it a favorite of furniture makers for generations, and it mellows to a warm, honeyed brown over the years.'],
   ['cherry', 'Cherry', '#a8623d', '#b8714a', 'Eastern United States', 'American cherry starts out a soft pinkish tan and slowly deepens to a rich reddish brown with light and time, so it keeps getting richer as you use it.'],
   ['maple', 'Maple', '#e6d3b0', '#efdfc0', 'Northern United States and Canada', 'Hard maple is the classic kitchen wood. It is dense, tight-grained and tough, which is why butcher blocks have been made from it for over a century.'],
   ['sapele', 'Sapele', '#7a3e27', '#8c4a30', 'West and Central Africa', 'Sapele is a relative of mahogany from the forests of West and Central Africa. Its interlocking grain gives it a shimmering ribbon figure that seems to move as the light changes.'],
@@ -1551,6 +1551,28 @@ const WOOD_LIBRARY = [
   ['bocote-black', 'Black palm', '#3a2c26', '#1d1512', 'Tropical regions', 'Black palm is not a true wood but the fibrous trunk of a palm, with black and tan specks running through it.'],
   ['cherry-spalted', 'Spalted cherry', '#b98060', '#4a3a30', 'North America', 'Spalted cherry carries dark lines drawn by natural fungi through its warm reddish wood.'],
   ['oak-quartersawn', 'Quartersawn white oak', '#c4a274', '#e2cca6', 'Eastern United States', 'Quartersawn white oak shows bright ray fleck across the grain, the signature look of Arts and Crafts furniture.']
+];
+
+// Wording that earlier versions put in stories and has since been rewritten (wood notes, template inspirations).
+// Kept so QR tags already printed with it still read in full.
+const STORY_RETIRED = [
+  "The head curls back on itself and climbs steeply over the blade, so the front end stands tall and bold.",
+  "Shaped like the head of a hatchet, with a flat, angled top over a sturdy grip.",
+  "A slim, straight rod of a handle, light and simple in the hand.",
+  "A flat spurtle, the old Scottish stirring stick, for porridge, soup and sourdough starter.",
+  "A spurtle with its tip cut at an angle, so it reaches into the corners of the pot.",
+  "A 6 by 4 1/4 inch blade with a straight working edge for cutting, lifting and scraping dough.",
+  "A glue-on handle rail whose lower edge sweeps across the blade in one gentle bow.",
+  "A 6 by 4 1/4 inch blade with a straight working edge and softly rounded corners, for cutting, lifting and scraping dough.",
+  "A glue-on handle rail whose lower edge rolls across the blade in soft scallops.",
+  "A one-piece scraper with a straight edge on one side and a rounded edge on the other, and a hole to hold it by.",
+  "A one-piece scraper shaped like a leaf, with a long sweeping curve and a finger hole.",
+  "A rounded bulb with a 1 inch hole, rising off the board through sweeping shoulders.",
+  "A tall handle with an open teardrop window, rising off the board through sweeping shoulders.",
+  "A bell-shaped top with a 3/4 inch hole, rising off the board through sweeping shoulders.",
+  "A hatchet-shaped top with a 3/4 inch hole, rising off the board through sweeping shoulders.",
+  "Each end panel is drawn as a bell, with an open mouth that sits over the bell below, so a stack of trays reads like a tower of bells.",
+  "Black walnut grows across the eastern United States. Its deep chocolate color has made it a favorite of furniture makers for generations, and it mellows to a warm, honeyed brown over the years."
 ];
 
 // Fixed story sentences and fragments, so QR codes can reference them instead of spelling them out.
@@ -1857,6 +1879,7 @@ function buildStoryDict() {
     ...BOARD_STYLES.map(b => b.story),
     ...DEFAULT_FINISHES.map(f => f.story),
     ...(typeof BUILTIN_TEMPLATES !== 'undefined' ? BUILTIN_TEMPLATES.map(t => t.inspiration) : []),
+    ...STORY_RETIRED,
     ...Object.values(PHRASES_LEGACY).flat().flatMap(frag),
     ...(typeof STORY_EXTRA !== 'undefined' ? STORY_EXTRA : []),
     // newer wording comes after, so an unlucky clash can never change what an older tag says
