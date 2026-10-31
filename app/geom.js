@@ -155,6 +155,27 @@ const G = (() => {
   }
   function fromSTL(buf) { return fromLoops(slice(parseSTL(buf))); }
 
+  // The smallest rectangle around the points at any angle: a plate's real length and width,
+  // even when it is laid diagonally to fit the print bed. Returns [long side, short side].
+  function minRect(pts) {
+    const P = pts.filter(p => isFinite(p[0]) && isFinite(p[1])).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    if (P.length < 3) return [0, 0];
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lo = [], hi = [];
+    for (const p of P) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+    for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p); }
+    const H = lo.slice(0, -1).concat(hi.slice(0, -1));
+    let best = null;
+    for (let i = 0; i < H.length; i++) {
+      const a = H[i], b = H[(i + 1) % H.length], len = Math.hypot(b[0] - a[0], b[1] - a[1]); if (len < 1e-9) continue;
+      const ux = (b[0] - a[0]) / len, uy = (b[1] - a[1]) / len;
+      let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+      for (const p of H) { const u = p[0] * ux + p[1] * uy, v = p[1] * ux - p[0] * uy; u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
+      if (!best || (u1 - u0) * (v1 - v0) < best[0] * best[1]) best = [u1 - u0, v1 - v0];
+    }
+    return best ? [Math.max(best[0], best[1]), Math.min(best[0], best[1])] : [0, 0];
+  }
+
   // Is this the same shape as another template? Size, area and balance point all have to agree,
   // so a mirrored copy or a longer variant still counts as different.
   const loopsOf = d => (d.match(/M[^MZ]*Z?/g) || []).map(r => r.replace(/[MZ]/g, '').trim().split(/\s*L\s*/).map(s => s.split(',').map(Number)).filter(p => p.length === 2 && !p.some(isNaN)));
@@ -172,9 +193,10 @@ const G = (() => {
   // "KJ1_jar_scraper_round.stl" -> { code: 'KJ1', name: 'Jar scraper (round)' }
   function nameFromFile(fn) {
     const base = fn.replace(/\.[^.]+$/, '');
-    const m = base.match(/^([A-Za-z]+)0*(\d+)[\s_-]+(.*)$/);
-    const code = m ? (m[1].toUpperCase() + m[2]) : '';
-    let words = (m ? m[3] : base).replace(/[_-]+/g, ' ').trim().split(/\s+/);
+    // A code is letters, a number, and sometimes a letter after it for a matching part (BS1R, ET1H)
+    const m = base.match(/^([A-Za-z]+)0*(\d+)([A-Za-z]?)[\s_-]+(.*)$/);
+    const code = m ? (m[1].toUpperCase() + m[2] + m[3].toUpperCase()) : '';
+    let words = (m ? m[4] : base).replace(/[_-]+/g, ' ').trim().split(/\s+/);
     const kept = words.filter(w => !/^(handle|head|arm|plate|template|knife)$/i.test(w));
     if (kept.length) words = kept;
     const KNOWN = /^(jar scraper|butter spreader|dough paddle|spatula|bowl|spreader|scraper|paddle)/i;
@@ -186,6 +208,6 @@ const G = (() => {
     return { code, name: s || base };
   }
 
-  return { parseSTL, slice, fromLoops, fromSTL, sameShape, findJoint, mateMatrix, apply, mul, inside, area, centroid, nameFromFile };
+  return { parseSTL, slice, fromLoops, fromSTL, minRect, sameShape, findJoint, mateMatrix, apply, mul, inside, area, centroid, nameFromFile };
 })();
 if (typeof module !== 'undefined') module.exports = G;

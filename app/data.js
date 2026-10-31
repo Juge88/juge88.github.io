@@ -200,6 +200,9 @@ const DEFAULT_GROUPS = [
   { id: 'kitchen-head', name: 'Kitchen heads', prefix: 'K' },
   { id: 'side-view', name: 'Side-view cuts', prefix: 'KV' },
   { id: 'push-pull', name: 'Push-pulls', prefix: 'PP' },
+  { id: 'bench-scraper', name: 'Bench scrapers', prefix: 'BS' },
+  { id: 'charcuterie-handle', name: 'Charcuterie handles', prefix: 'CH' },
+  { id: 'egg-tray', name: 'Egg trays', prefix: 'ET' },
   { id: 'shop-extras', name: 'Shop extras', prefix: 'X' }
 ];
 
@@ -213,6 +216,7 @@ const CARE = {
   'jar scraper': 'Hand wash and dry it right away; never the dishwasher or a long soak. The tip is thin, so use it to scrape, not to pry lids. Re-oil whenever the wood looks thirsty.',
   'butter spreader': 'Hand wash and dry it right away; never the dishwasher or a long soak. Re-oil whenever the wood looks thirsty, and it will keep a soft, smooth edge for years.',
   'dough paddle': 'Scrape off dough before it dries, then hand wash and dry it right away. Never the dishwasher or a long soak. Re-oil whenever the wood looks thirsty.',
+  spurtle: 'Hand wash and dry it right away; never the dishwasher or a long soak. Stirring hot food is fine, just don’t leave it resting in a hot pot. Re-oil whenever the wood looks thirsty.',
   board: 'Hand wash with warm soapy water, then dry it standing on edge so both faces can breathe. Never soak it or put it in the dishwasher. Oil it about once a month, or whenever it looks dry, to keep it from cracking. A rub with lemon and coarse salt freshens it up.',
   'board-end': 'End grain drinks oil faster than other boards, so oil it every week for the first month, then monthly. Hand wash with warm soapy water and dry it standing on edge. Never soak it or put it in the dishwasher. Its fibers close back up after cutting, so it stays kind to your knives.',
   pushpull: 'Wipe it clean or hand wash and dry it. Keep it away from open flame and direct contact with heating elements, and use it to slide the rack, not to lift hot pans. Re-oil when the wood looks dry.',
@@ -226,7 +230,8 @@ const DEFAULT_KINDS = [
   { id: 'spatula', name: 'Spatula', noun: 'spatula', care: CARE.spatula },
   { id: 'jar scraper', name: 'Jar scraper', noun: 'jar scraper', care: CARE['jar scraper'] },
   { id: 'butter spreader', name: 'Butter spreader', noun: 'butter spreader', care: CARE['butter spreader'] },
-  { id: 'dough paddle', name: 'Dough paddle', noun: 'dough paddle', care: CARE['dough paddle'] }
+  { id: 'dough paddle', name: 'Dough paddle', noun: 'dough paddle', care: CARE['dough paddle'] },
+  { id: 'spurtle', name: 'Spurtle', noun: 'spurtle', care: CARE.spurtle }
 ];
 
 const BOARD_STYLES = [
@@ -278,12 +283,135 @@ const DEFAULT_SETTINGS = {
   nextNumber: 1,
   logo: 'logo.png',   // shop logo: a file in the app, a picture you picked, or '' for none
   email: 'kevingwaltney3@gmail.com',   // printed on cards
-  cardStyle: 'side'
+  cardStyle: 'side',
+  theme: 'auto',   // auto follows the phone; light or dark stay put
+  area: ''         // pickup area for listings
 };
 
 /* ---------- Story phrasing ---------- */
-// Several ways to say each part, so stories don't read the same piece to piece.
+// The story is assembled from facts about the piece. Each part has several wordings, and Bench steers
+// clear of the wording the piece before it used, so stories read differently from one piece to the next.
+// Placeholders: {no} {noun} {made} {when} {woods} {n} {N} {wood} {Wood} {tone} ...
 const PHRASES = {
+  open: [
+    'No. {no} is {a} {noun} {made}{when}.',
+    'This {noun} is No. {no}, {made}{when}.',
+    'Meet No. {no}, {a} {noun} {made}{when}.',
+    'No. {no} started as a stack of boards and ended up as this {noun}, {made}{when}.',
+    'There is only one No. {no}: {a} {noun} {made}{when}.',
+    'Every piece from the shop gets a number, and this {noun} is No. {no}. It was {made}{when}.',
+    'Say hello to No. {no}, {a} {noun} {made}{when}.',
+    'Fresh off the bench: No. {no}, {a} {noun} {made}{when}.',
+    'This is No. {no}, {a} {noun} {made}{when}.'
+  ],
+  // Sometimes added after the opening line
+  unique: [
+    'No other piece will ever have this exact grain.',
+    'Wood never repeats itself, so neither do these.',
+    'Nobody else has one quite like it.',
+    'It is the only one like it.'
+  ],
+  strips: [
+    'It is laminated from {n} strips of {woods}.',
+    '{N} strips went into the blank: {woods}.',
+    'The blank was glued up from {n} strips of {woods}.',
+    'It is built from {n} strips: {woods}.',
+    'It starts with {n} strips of {woods}, glued up side by side.'
+  ],
+  // when a wood repeats, so there are more strips than woods
+  stripsMixed: [
+    'It is laminated from {n} strips of {k} woods: {woods}.',
+    '{N} strips of {k} different woods went into the blank: {woods}.',
+    'The blank was glued up from {n} strips, using {k} woods: {woods}.'
+  ],
+  solid: [
+    'It is made from solid {wood}.',
+    'It is cut from a single piece of {wood}.',
+    'It is solid {wood}, all the way through.'
+  ],
+  mirror: ['The strips are mirrored, so it reads the same from either side.', 'The lamination is mirrored end to end, so both sides match.'],
+  alternate: ['The two woods alternate strip by strip, like piano keys.', 'The two woods trade places strip after strip, like piano keys.'],
+  center: ['A single strip of {wood} runs right down the center.', 'One strip of {wood} runs down the middle.'],
+  mostly: ['It is mostly {wood}, with {others} for contrast.', 'Most of it is {wood}, set off by {others}.'],
+  contrast: ['{Tone1} {wood1} against {tone2} {wood2} gives it plenty of contrast.', 'The {tone1} {wood1} and {tone2} {wood2} play off each other.'],
+  pop: ['A strip of {tone} {wood} adds a flash of color.', 'The {tone} {wood} is the first thing you notice.'],
+  pops: ['Strips of {tone} {wood} add flashes of color.', 'The {tone} {wood} strips are the first thing you notice.'],
+  pinstripe: ['The thin strips of {woods} work like pinstripes between the wider ones.', 'Thin strips of {woods} run through it like pinstripes.'],
+  pinstripe1: ['The thin strip of {wood} works like a pinstripe between the wider ones.', 'A thin strip of {wood} runs through it like a pinstripe.'],
+  continents: ['These woods are native to {k} different continents.', 'Between them, these woods are native to {k} continents.'],
+  hard: ['The {wood} is the hardest wood in it, about {janka} pounds-force on the Janka scale, {cmp}.', 'At about {janka} pounds-force on the Janka scale, the {wood} is {cmp}.'],
+  first: ['It is the first piece from the shop with this combination of woods.', 'This exact mix of woods is a first for the shop.', 'No piece from the shop has used this combination of woods before.'],
+  second: ['Only one other piece from the shop shares this mix of woods.', 'It is only the 2nd piece from the shop with this mix of woods.'],
+  nth: ['It is only the {nth} piece from the shop with this mix of woods.'],
+  // Design: the templates it was cut from
+  pair: ['It pairs the {a} {sa} with the {b} {sb}.', 'Its {sa} is the {a}, and its {sb} is the {b}.', 'The {sa} is the {a}; the {sb} is the {b}.'],
+  part: ['Its {sa} is the {a}.', 'The {sa} is the {a}.'],
+  // Last lines
+  closing: [
+    'Thank you for supporting a small shop.',
+    'Thank you for bringing it home.',
+    'Thank you for choosing something made by hand.',
+    'Use it often. It only looks better with age.',
+    'Thanks for giving it a good home.',
+    'Use it every day; that is what it is for.',
+    'Thank you for keeping handmade things in your kitchen.'
+  ],
+  closeKnife: ['Here’s to a lot of good loaves.', 'May it slice a lot of good bread.', 'Enjoy the bread.'],
+  closeBoard: ['Here’s to a lot of good meals on it.', 'May it see a lot of good meals.'],
+  closeBowl: ['Fill it with something good.', 'May it always be full.'],
+  closeTool: ['Happy cooking.', 'Enjoy cooking with it.'],
+  // For bowls and boards
+  bowlSeg: ['It is a segmented bowl: {count} pieces of {woods} cut and glued into {rings} rings on a solid base, then turned on the lathe.'],
+  bowlSolid: ['It was turned from a single blank of {woods}.'],
+  bowlEpoxy: ['It was turned from a single blank of {woods}, with {epoxy}epoxy filling its cracks and voids.'],
+  bowlShape: ['Its shape is {shape}, about {size}.']
+};
+// Other ways to say the default "how it's made" lines. Only used while the item type still has the default text.
+const BUILD_ALTS = {
+  knife: [
+    'The strips were glued into one blank first, and the handle and arm were both cut from it, so the lamination runs unbroken through the whole bow. The stainless steel bread blade is set just a hair long, so the bow holds it tight.',
+    'Each strip was ripped and flattened, then glued into one blank. The handle and arm both come out of that blank, which is why the stripes line up from end to end. The stainless steel bread blade is cut a hair long so the bow keeps it tight.'
+  ],
+  kitchen: [
+    'The handle and head came out of one laminated blank, then were shaped and sanded by hand.',
+    'It was cut from a single laminated blank and shaped and sanded by hand, so the stripes run from the handle into the head.'
+  ],
+  board: [
+    'Each strip and block was cut, arranged and glued up by hand, then flattened and sanded smooth.',
+    'It was cut, laid out and glued up by hand, then flattened and sanded smooth.'
+  ],
+  bowl: ['It was turned on the lathe by hand and sanded smooth through fine grits.'],
+  pushpull: ['It was cut and shaped by hand. The hook catches the oven rack, so you can slide it out without reaching into the heat.'],
+  serving: ['It was cut, shaped and sanded by hand for setting out bread, cheese and everything that goes with them.'],
+  lame: ['It was shaped by hand and slotted to hold a razor blade for scoring loaves.']
+};
+const FINISH_ALTS = {
+  'Rubio Monocoat': ['The finish is Rubio Monocoat, a plant-based oil that bonds to the wood in a single coat and is food safe once cured.'],
+  'Mineral oil & wax': ['The finish is food-grade mineral oil topped with a beeswax blend.', 'A coat of food-grade mineral oil and a beeswax blend finishes it.'],
+  'Board butter': ['The finish is board butter, a blend of food-grade oil and beeswax.']
+};
+// A few words on how each common wood looks, for lines like "dark walnut against creamy maple".
+// Woods not listed get a word from their color.
+const WOOD_LOOK = {
+  walnut: 'dark', 'claro-walnut': 'dark', 'english-walnut': 'dark', 'peruvian-walnut': 'dark', maple: 'creamy', 'curly-maple': 'creamy', birdseye: 'creamy', 'soft-maple': 'pale', 'quilted-maple': 'creamy',
+  cherry: 'warm', sapele: 'reddish', purpleheart: 'vivid', padauk: 'orange-red', bloodwood: 'deep red', hickory: 'two-toned', olive: 'swirly',
+  poplar: 'pale', 'oak-white': 'light', 'oak-red': 'warm', yellowheart: 'bright yellow', zebrawood: 'striped', wenge: 'near-black', ebony: 'jet-black',
+  'african-blackwood': 'jet-black', canarywood: 'golden', redheart: 'bright red', bubinga: 'rosy', mahogany: 'warm', teak: 'golden', ash: 'light',
+  beech: 'pale', birch: 'pale', holly: 'snow-white', mulberry: 'golden', osage: 'golden', 'osage-orange': 'golden', cocobolo: 'fiery', leopardwood: 'speckled',
+  goncalo: 'striped', tigerwood: 'striped', jatoba: 'reddish', ipe: 'dark', katalox: 'near-black', mesquite: 'rich', lacewood: 'speckled', 'pink-ivory': 'pink',
+  bocote: 'striped', 'box-elder': 'pale', 'ambrosia-maple': 'streaked', cedar: 'red-tinged', 'spanish-cedar': 'warm'
+};
+const WOOD_POP = ['purpleheart', 'padauk', 'bloodwood', 'yellowheart', 'redheart', 'canarywood', 'pink-ivory', 'cocobolo', 'osage', 'osage-orange', 'mulberry'];
+// Where each library origin sits, for "native to three continents". Unclear origins are left out.
+const CONTINENT = [[/hawaii/i, ''], [/tropical|orchard|grown locally/i, ''], [/ and (europe|asia|australia|africa|north america)/i, ''],
+  [/united states|canada|north america|pacific northwest|california|oregon|ohio|pacific coast/i, 'North America'],
+  [/central america|south america|brazil|guyana|bolivia|caribbean/i, 'South and Central America'],
+  [/africa/i, 'Africa'], [/europe|mediterranean/i, 'Europe'], [/asia|indonesia/i, 'Asia'], [/australia/i, 'Australia']];
+const continentOf = origin => { for (const [re, c] of CONTINENT) if (re.test(origin || '')) return c; return ''; };
+
+// Wording from earlier versions. QR tags already printed point at these, so they stay known to the story page.
+const PHRASES_LEGACY = {
+  woodIntro: ['About the {wood}: ', 'A little about the {wood}: '],
   open: [
     'This {noun} is No. {no}, made {by}{when}. It is one of a kind; there will never be another with this exact grain.',
     'No. {no} came off the bench {by}{when}. Like every piece here, it is numbered and one of a kind.',
@@ -295,34 +423,21 @@ const PHRASES = {
     'No. {no} started as a pile of boards and ended up as this {noun}, made {by}{when}.',
     'This {noun} is No. {no}, made {by}{when}. Nobody else has one quite like it.'
   ],
-  strips: [
-    'It is laminated from {n} strips of {woods}.',
-    'Its blank was glued up from {n} strips: {woods}.',
-    '{n} strips went into this one, {woods}.',
-    'It is built from {n} laminated strips of {woods}.',
-    'The pattern comes from {n} strips: {woods}.',
-    'It starts with {n} strips of {woods}, glued up side by side.'
-  ],
-  solid: [
-    'It is made from solid {wood}.',
-    'It is cut from a single piece of {wood}.',
-    'It is solid {wood}, all the way through.',
-    'It is one solid piece of {wood}, nothing added.'
-  ],
-  woodIntro: ['', '', '', 'About the {wood}: '],
-  closing: [
-    'Thank you for supporting a small shop.',
-    'Thank you for bringing it home.',
-    'Thanks for giving it a place in your kitchen.',
-    'Thank you for choosing something made by hand.',
-    'Use it often. It only looks better with age.',
-    'Thanks for giving it a good home.'
-  ]
+  strips: ['Its blank was glued up from {n} strips: {woods}.', '{n} strips went into this one, {woods}.', 'It is built from {n} laminated strips of {woods}.', 'The pattern comes from {n} strips: {woods}.'],
+  solid: ['It is one solid piece of {wood}, nothing added.'],
+  closing: ['Thanks for giving it a place in your kitchen.']
 };
-// Wording from earlier versions. QR tags already printed point at these, so they stay known to the story page.
-const PHRASES_LEGACY = {
-  woodIntro: ['About the {wood}: ', 'A little about the {wood}: ']
-};
+
+// The story page and the app both split a story into what shows up front, the wood notes that fold away, and the sign-off.
+function storyBlocks(text) {
+  const isWood = p => /^(A little )?about the /i.test(p) || /^With a Janka hardness/.test(p) || WOOD_LIBRARY.some(w => w[5] && w[5].length > 20 && p.includes(w[5]));
+  const main = [], more = [], tail = [];
+  String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).forEach(p => {
+    const care = /^Care:/i.test(p), sign = /^—|\n—/.test(p) || /^(Thank you|Thanks|Use it|Here’s to|Here is to|May it|Enjoy|Fill it|Happy cooking)/.test(p);
+    (care ? main : sign ? tail : isWood(p) ? more : main).push({ text: p, kind: care ? 'care' : sign ? 'sign' : isWood(p) ? 'wood' : '' });
+  });
+  return { main, more, tail };
+}
 
 /* ---------- QR text packing ---------- */
 // Known text shared by the app and the story page, so QR codes only carry what is unique to each piece.
@@ -336,12 +451,15 @@ function buildStoryDict() {
     ...BOARD_STYLES.map(b => b.story),
     ...DEFAULT_FINISHES.map(f => f.story),
     ...(typeof BUILTIN_TEMPLATES !== 'undefined' ? BUILTIN_TEMPLATES.map(t => t.inspiration) : []),
-    ...Object.values(PHRASES).flat().flatMap(frag),
     ...Object.values(PHRASES_LEGACY).flat().flatMap(frag),
-    ...(typeof STORY_EXTRA !== 'undefined' ? STORY_EXTRA : [])
+    ...(typeof STORY_EXTRA !== 'undefined' ? STORY_EXTRA : []),
+    // newer wording comes after, so an unlucky clash can never change what an older tag says
+    ...Object.values(PHRASES).flat().flatMap(frag),
+    ...Object.values(BUILD_ALTS).flat(),
+    ...Object.values(FINISH_ALTS).flat()
   ].filter(Boolean);
   const map = new Map();
-  for (const t of list) map.set(storyKey(t), t);
+  for (const t of list) { const k = storyKey(t); if (!map.has(k)) map.set(k, t); }
   return map;
 }
 function storyKey(t) { let h = 0x811c9dc5; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h.toString(36).slice(-5); }
@@ -376,7 +494,33 @@ const TEMPLATE_GUIDES = [
     print: '',
     steps: ['Dashed circles show the hole size, and the grey tapered punch marks where to punch.', 'The small holes run from 1/8″ up to 3/8″. The two big 5/8″ holes are the pulls.', 'The labeled hole marked “hang” is for a hook.'],
     img: 'guide-pushpull.png', caption: 'Squirrel, fox and axe plates.', untested: true },
-  { test: t => t.group === 'kitchen-head', title: 'Kitchen heads', steps: [], tip: 'Heads carry the socket and handles carry the tail. Every head and handle shares one dovetail.', untested: true },
+  { test: t => t.group === 'bench-scraper', title: 'Bench scrapers',
+    print: '',
+    steps: ['BS1 Bow and BS2 Scallop come in two parts: the blade and a glue-on handle rail (BS1R and BS2R).', 'The blades are 6 × 4 1/4 inches with a straight working edge, and run all the way to the top.', 'Glue the handle on along the engraved line. A handle only fits its own blade.', 'BS3 Flip and BS4 Leaf are one piece each, with a finger hole.'],
+    img: 'guide-benchscraper.png', caption: 'BS1 Bow and BS2 Scallop, blade with the handle rail glued on.', untested: true },
+  { test: t => t.group === 'charcuterie-handle', title: 'Charcuterie handles',
+    print: '1/2 inch router templates: PLA or PETG, 4 walls, 30–40% infill, so the bearing has something solid to ride.',
+    steps: ['Every handle rises off the board through the same sweeping shoulders, so any of them fits a board 6 inches wide or wider.', 'CH1 Bulb: 5 × 2 1/8 inches, 1 inch hole. CH2 Teardrop: 5 × 2 1/4 inches, open teardrop window.', 'CH3 Bell: 4 3/4 × 2 1/4 inches, 3/4 inch hole. CH4 Hatchet: 5 × 1 3/4 inches, 3/4 inch hole.', 'Bandsaw about 1/16 inch outside the line, tape the template on, and flush-trim. Every inside curve is at least a 1/4 inch radius, so a 1/2 inch bearing bit follows the whole edge.'],
+    img: 'guide-charcuterie.png', caption: 'The four handles, shown in walnut, maple and cherry.', untested: true },
+  { test: t => t.group === 'egg-tray', title: 'Egg trays',
+    print: 'ET1 is a 1/2 inch router template: PLA or PETG, 4 walls, 30–40% infill. ET1H is a 5 mm plate: PLA, 3 walls, 15% infill.',
+    steps: ['ET1 is the end panel. The whole panel is drawn as a bell: crown and loop at the top, sides that flare out to a lip.', 'The open mouth at the bottom sits over the bell below, so trays stack into a tower of bells.', 'Rout every end panel from ET1: bandsaw about 1/16 inch outside the line, tape the template on, and flush-trim with a 1/2 inch bearing bit.', 'ET1H marks the egg board, a 3/4 inch board. Mark it from each end, then drill 1 1/2 inch Forstner holes 1/2 inch deep.'],
+    img: 'guide-eggtray.png', caption: 'First draft, refined, and refined with a maple stripe, single and stacked.', untested: true },
+  { test: t => t.group === 'side-view', title: 'Side views',
+    print: '',
+    steps: ['Pick the side view by the head you are making. Any handle fits any head, so the handle never changes it.', 'Trace the head on the face of the blank and the side view on its edge, then bandsaw the underside.', 'Every side view is engraved FOR and the heads it goes with.'] },
+  { test: t => t.group === 'kitchen-head', title: 'Kitchen heads', steps: [], tip: 'Heads carry the socket and handles carry the tail. Every head and handle shares one dovetail, so any handle (KH1–KH6) fits any head.', untested: true },
   { test: t => t.group === 'kitchen-handle', title: 'Kitchen handles', steps: [], tip: 'Handles carry the tail and heads carry the socket. Every head and handle shares one dovetail.' }
 ];
 const guideFor = t => TEMPLATE_GUIDES.find(g => g.test(t));
+
+// Which side view goes with which head, from what_goes_with_what.json in the master set.
+// The side view is picked by the head; any handle fits any head.
+const SIDE_VIEW_FOR = {
+  KB1: 'KV1', KB2: 'KV1', KB3: 'KV1', KB4: 'KV1', KB5: 'KV1',
+  KS1: 'KV2', KS2: 'KV2', KS3: 'KV2', KS4: 'KV2',
+  KP1: 'KV3', KP2: 'KV3',
+  KJ1: 'KV4', KJ2: 'KV4',
+  KR1: 'KV5',
+  KD1: 'KV6'
+};

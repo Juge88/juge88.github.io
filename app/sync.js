@@ -9,7 +9,7 @@ const SY = (() => { try { return JSON.parse(localStorage.getItem(SYK)) || {}; } 
 SY.k ??= {}; SY.p ??= {}; SY.del ??= {};
 const sySave = () => { try { localStorage.setItem(SYK, JSON.stringify(SY)); } catch (e) {} };
 // Each setting counts on its own, so changing one on each device doesn't clash. The sign-in code stays on its device.
-const syKeys = () => [...Object.keys(S).filter(k => !['pieces', 'version', 'settings'].includes(k)), ...Object.keys(S.settings).filter(f => f !== 'gh').map(f => 'settings.' + f)];
+const syKeys = () => [...Object.keys(S).filter(k => !['pieces', 'version', 'settings'].includes(k)), ...Object.keys(S.settings).filter(f => f !== 'gh' && f !== 'theme').map(f => 'settings.' + f)];   // light or dark stays per device
 const syGet = k => k.startsWith('settings.') ? S.settings[k.slice(9)] : S[k];
 const sySet = (k, v) => { if (k.startsWith('settings.')) S.settings[k.slice(9)] = v; else S[k] = v; };
 const syUtf8b64 = str => { const u = new TextEncoder().encode(str); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
@@ -143,7 +143,7 @@ async function syncNow() {
     }
     if (await syPhotos()) { const top = stack[stack.length - 1]; if (!/^(editPiece|combo)/.test(top?.view || '') && $('#sheet').hidden) render(true); }
   } catch (e) {
-    SY.err = e.status === 401 ? 'The sign-in code stopped working. Reconnect in Settings.' : 'Waiting for the internet';
+    SY.err = e.status === 401 ? 'The sign-in code stopped working. Set up the story page again in Shop.' : 'Waiting for the internet';
   } finally { syBusy = false; sySave(); syShow(); if (syAgain) { syAgain = false; syQueue(1500); } }
 }
 function syQueue(ms = 5000) { if (!ghOn()) return; clearTimeout(syTimer); syTimer = setTimeout(syncNow, ms); }

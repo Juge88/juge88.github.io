@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '2.0.1';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -89,6 +89,27 @@ function migrate() {
     if (k && d && k.build === OLD_DEFAULTS.kitchenBuild) k.build = d.build;
     S.version = 7; save();
   }
+  if ((S.version || 1) < 9) {
+    // 2.0: the new master set. New sections and the spurtle join the lists, unless you removed a section yourself.
+    for (const g of DEFAULT_GROUPS) if (!S.groups?.some(x => x.id === g.id)) { S.groups ||= []; const at = S.groups.findIndex(x => x.id === 'shop-extras'); S.groups.splice(at < 0 ? S.groups.length : at, 0, structuredClone(g)); }
+    for (const k of DEFAULT_KINDS) if (!S.kinds.some(x => x.id === k.id)) S.kinds.push(structuredClone(k));
+  }
+  if ((S.version || 1) < 10) {
+    // Templates you imported that are now built in (drill guide, blade guard, and in 2.0.1 the side views) give way to the built-in ones. Your notes, colors and printed dates carry over.
+    S.templates = S.templates.filter(t => {
+      const b = BUILTIN_TEMPLATES.find(x => x.id === t.id);
+      if (!b || !G.sameShape(t, b)) return true;
+      const keep = {}; ['notes', 'printColor', 'print', 'inspiration'].forEach(k => { if (t[k] !== undefined && t[k] !== '' && t[k] !== b[k]) keep[k] = t[k]; });
+      if (Object.keys(keep).length) S.tplEdits[t.id] = { ...(S.tplEdits[t.id] || {}), ...keep };
+      photoDel('stl:' + t.id);
+      return false;
+    });
+  }
+  if ((S.version || 1) < 8) {
+    // 2.0: sold pieces keep the story their buyer has, from here on, even when Bench learns new wording
+    S.pieces.forEach(p => { if (p.status === 'sold' && !p.storyEdited && !p.storyLocked) { try { p.story = genStory(p); p.storyLocked = true; } catch (e) {} } });
+  }
+  if ((S.version || 1) < 10) { S.version = 10; save(); }
   GR.on = S.settings.grain !== false;
   S.shop ??= DEFAULT_SHOP.slice();
   S.woods ??= [];
@@ -96,7 +117,9 @@ function migrate() {
   S.groups ??= structuredClone(DEFAULT_GROUPS);
   S.previewWoods = (S.previewWoods && S.previewWoods.length) ? S.previewWoods : ['walnut', 'maple', 'walnut', 'cherry', 'walnut', 'maple', 'walnut'];
 }
+let planCache = new Map();   // story wording choices, worked out once per change
 function save() {
+  planCache = new Map();
   try { localStorage.setItem(KEY, JSON.stringify(S)); }
   catch (e) { toast('Could not save. Storage is full; back up and remove old photos.'); }
 }
@@ -151,7 +174,7 @@ function findWoods(q, pool = allWoods()) {
   }).filter(x => x.d <= Math.max(1.5, q.length * 0.34)).sort((a, b) => a.d - b.d);
   return { hits: [], guesses: scored.slice(0, 4).map(x => x.w) };
 }
-const woodSub = w => [w.origin, w.janka ? lbf(w.janka) : '', stockOf(w.id).bf != null ? `${fmtBf(stockOf(w.id).bf)} bd ft on hand` : ''].filter(Boolean).join(' · ');
+const woodSub = w => [w.origin, w.janka ? lbf(w.janka) : '', stockOf(w.id).bf != null ? `${fmtBf(stockOf(w.id).bf)} bd ft on hand` : ''].filter(Boolean).join(', ');
 const swatch = (w, size = 32, r = 9) => `<span class="sw" style="width:${size}px;height:${size}px;border-radius:${r}px;flex:none;background:linear-gradient(90deg,${w.color},${w.color2 || w.color});box-shadow:inset 0 0 0 1px #0005"></span>`;
 const woodRow = (w, extra = '') => `${swatch(w)}<div class="grow"><div class="t">${esc(w.name)}</div><div class="s">${esc(woodSub(w))}</div></div>${extra}`;
 const allWoods = () => [...LIB.map(w => woodById(w.id)), ...S.woods].sort((a, b) => a.name.localeCompare(b.name));
@@ -278,12 +301,6 @@ function comboState(p) {
   return 'ask';
 }
 function comboIsFirst(p) { return comboState(p) === 'first'; }
-function laminationNotes(p) {
-  const st = comboState(p);
-  if (st === 'first') return ['It is the first piece from the shop with this combination of woods.'];
-  if (st === 'repeat') return [`It is only the ${ordinal(comboBefore(p) + 1)} piece from the shop with this mix of woods.`];
-  return [];
-}
 // The board's own sentences: how it's laid out, its size, and its finishing touches
 function boardStory(bd) {
   const out = [], lc = s => String(s).toLowerCase(), size = `${BD.frac(BD.lengthOf(bd))} × ${BD.frac(BD.widthOf(bd))}`;
@@ -306,47 +323,173 @@ function boardStory(bd) {
   return out;
 }
 
-function genStory(p) {
-  const st = S.settings, type = typeById(p.type);
-  let rnd = seedOf(p); const pick = a => a[((rnd = (Math.imul(rnd, 1103515245) + 12345) >>> 0) >>> 8) % a.length];
-  const woods = uniqWoods(p.woods), lc = s => s.toLowerCase();
-  const by = st.shop ? `in the ${st.shop} shop` : (st.maker ? `by ${st.maker}` : 'by hand');
-  const parts = [];
-  parts.push(fill(pick(PHRASES.open), { noun: nounOf(p), no: pad(p.no), by, when: p.date ? ` in ${monthYear(p.date)}` : '' }));
-  if (p.special && p.special.trim()) parts.push(p.special.trim().replace(/([^.!?])$/, '$1.'));
-  const hardLine = () => {
-    const hardest = [...woods].sort((a, b) => (b.janka || 0) - (a.janka || 0))[0];
-    if (hardest && hardest.janka >= 2500) parts.push(`With a Janka hardness of about ${Number(hardest.janka).toLocaleString('en-US')} pounds-force, the ${lc(hardest.name)} is ${hardest.janka >= 2900 ? 'about twice as hard as hard maple' : 'far harder than hard maple'}.`);
+/* The story generator. Everything it says comes from the piece's own details: its number, date, woods in strip order,
+   strip thicknesses, templates, finish and type. Several wordings exist for each part, picked by a seed so a piece
+   keeps its story, and never the same wording as the piece numbered just before it, so stories don't go stale. */
+const NUM_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve'];
+const numWord = n => NUM_WORDS[n] || String(n);
+function rng(seed) { let r = (seed >>> 0) || 1; return () => (r = (Math.imul(r, 1103515245) + 12345) >>> 0) / 4294967296; }
+const prevPiece = p => S.pieces.filter(q => q.id !== p.id && q.no < p.no).sort((a, b) => b.no - a.no)[0] || null;
+function storyPlan(p, depth = 0) {
+  const key = p.id + ':' + p.no + ':' + depth;
+  if (planCache.has(key)) return planCache.get(key);
+  const R = rng(seedOf(p)), plan = {};
+  for (const k of ['open', 'unique', 'shape', 'list', 'obs', 'pair', 'build', 'fin', 'close', 'combo', 'when', 'pattern', 'look']) plan[k] = R();
+  const prev = depth < 6 ? prevPiece(p) : null;
+  if (prev) plan._prev = storyPlan(prev, depth + 1);
+  planCache.set(key, plan); return plan;
+}
+// Which wording to use for one part: the seed's choice, moved along one if the piece before used the same one
+function pickOf(plan, key, list) {
+  const len = list.length; if (len <= 1) return list[0];
+  const at = pl => { const i = Math.floor(pl[key] * len) % len; if (!pl._prev) return i; const j = at(pl._prev); return i === j ? (i + 1) % len : i; };
+  return list[at(plan)];
+}
+function hsl(hex) {
+  const n = parseInt(String(hex || '#888888').slice(1, 7), 16), r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+  if (!d) return [0, 0, l];
+  const s2 = d / (1 - Math.abs(2 * l - 1)); let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(h * 60 + 360) % 360, s2, l];
+}
+// A word for how a wood looks: from the short list for common woods, otherwise from its color
+function toneOf(w) {
+  if (WOOD_LOOK[w.id]) return WOOD_LOOK[w.id];
+  const [h, sat, l] = hsl(w.color), L = lum(w.color || '#888888');
+  if (L < 70) return 'dark'; if (L > 200) return 'pale';
+  if (sat > .45 && (h < 15 || h > 340)) return 'red'; if (sat > .45 && h >= 260 && h <= 340) return 'purple';
+  if (sat > .5 && h >= 15 && h < 38) return 'orange'; if (sat > .45 && h >= 38 && h < 65) return 'golden';
+  return L > 150 ? 'light' : 'warm';
+}
+const lcName = w => w.name.toLowerCase();
+// The sentences about the woods: what they are, then a couple of things worth noticing in how they were laid out
+function woodParagraph(p, plan) {
+  const type = typeById(p.type), woods = uniqWoods(p.woods), lc = lcName, out = [];
+  if (!woods.length) return '';
+  const names = joinList(woods.map(lc));
+  const combo = () => {
+    const st = comboState(p);
+    if (st === 'first') return pickOf(plan, 'combo', PHRASES.first);
+    if (st === 'repeat') { const n = comboBefore(p) + 1; return n === 2 ? pickOf(plan, 'combo', PHRASES.second) : fill(PHRASES.nth[0], { nth: ordinal(n) }); }
+    return '';
   };
   if (type.bowl && p.bowl) {
-    const bw = p.bowl, names = joinList(woods.map(w => lc(w.name)));
-    if (bw.kind === 'seg') parts.push(`It is a segmented bowl: ${B.pieceCount(bw)} pieces of ${names} cut and glued into ${bw.rings.length} rings on a solid base, then turned on the lathe.`);
-    else parts.push(`It was turned from a single blank of ${names}${bw.kind === 'epoxy' ? `, with ${bw.epoxy ? lc(bw.epoxy) + ' ' : ''}epoxy filling its cracks and voids.` : '.'}`);
-    parts.push(`Its shape is ${(B.SHAPES[bw.shape] || B.SHAPES.open).phrase}, about ${bowlSize(bw)}.`);
-    woods.forEach(w => { if (w.story) { const i = pick(PHRASES.woodIntro); parts.push((i ? fill(i, { wood: lc(w.name) }) : '') + w.story); } });
-    hardLine();
-  } else if (woods.length) {
-    const bd = type.board && p.board, blocks = bd && bd.style === 'end', multi = bd && bd.style === 'multi';
-    const first = multi ? `It is made from ${joinList(woods.map(w => lc(w.name)))}.` : blocks ? `It is built from blocks of ${joinList(woods.map(w => lc(w.name)))}.`
-      : p.woods.length > 1
-      ? fill(pick(PHRASES.strips), { n: p.woods.length, woods: joinList(woods.map(w => lc(w.name))) })
-      : fill(pick(PHRASES.solid), { wood: lc(woods[0].name) });
-    parts.push([cap(first), ...(blocks || multi ? laminationNotes(p).slice(-1) : laminationNotes(p))].join(' '));
-    woods.forEach(w => { if (w.story) { const i = pick(PHRASES.woodIntro); parts.push((i ? fill(i, { wood: lc(w.name) }) : '') + w.story); } });
-    hardLine();
+    const bw = p.bowl;
+    if (bw.kind === 'seg') out.push(fill(PHRASES.bowlSeg[0], { count: B.pieceCount(bw), woods: names, rings: bw.rings.length }));
+    else if (bw.kind === 'epoxy') out.push(fill(PHRASES.bowlEpoxy[0], { woods: names, epoxy: bw.epoxy ? bw.epoxy.toLowerCase() + ' ' : '' }));
+    else out.push(fill(PHRASES.bowlSolid[0], { woods: names }));
+    out.push(fill(PHRASES.bowlShape[0], { shape: (B.SHAPES[bw.shape] || B.SHAPES.open).phrase, size: bowlSize(bw) }));
+    return out.filter(Boolean).join(' ');
   }
-  if (type.board && p.board) parts.push(...boardStory(p.board));
-  type.slots.forEach(s => {
-    const t = tplById((p.templates || {})[s.name]);
-    if (t && t.inspiration) parts.push(`Its ${lc(s.name)} is the ${t.name}. ${t.inspiration}`);
-  });
-  if (type.build) parts.push(type.build);
-  const fin = finishByName(p.finish); if (fin && fin.story) parts.push(fin.story);
-  const care = careOf(p); if (care) parts.push('Care: ' + care);
-  parts.push(pick(PHRASES.closing) + (st.maker ? `\n— ${st.maker}` : ''));
-  return parts.join('\n\n');
+  if (type.board && p.board) {
+    const bd = p.board;
+    out.push(bd.style === 'end' ? `It is built from blocks of ${names}.` : `It is made from ${names}.`);
+    out.push(combo());
+    return out.filter(Boolean).join(' ');
+  }
+  const seq = p.woods.filter(id => woodById(id)), n = seq.length, k = woods.length;
+  if (n <= 1 || k === 1 && n === 1) { out.push(fill(pickOf(plan, 'list', PHRASES.solid), { wood: lc(woods[0]) })); return out.join(' '); }
+  out.push(fill(pickOf(plan, 'list', k < n && k > 1 ? PHRASES.stripsMixed : PHRASES.strips), { n: numWord(n), N: cap(numWord(n)), k: numWord(k), woods: names }));
+  const c = combo(); if (c) out.push(c);
+  if (k < 2) return out.join(' ');
+  // Things worth noticing, grouped so one of each kind can show up. Each remembers which woods it talks about.
+  const count = id => seq.filter(x => x === id).length, W = seq.length === p.woods.length ? stripW(p) : null, widthOf = i => W ? W[i] : 1;
+  const pattern = [], look = [], trivia = [], say = (g, text, ids = []) => g.push({ text, ids });
+  const mirror = n >= 3 && seq.every((x, i) => x === seq[n - 1 - i]);
+  if (mirror) say(pattern, pickOf(plan, 'pattern', PHRASES.mirror));
+  else if (k === 2 && n >= 4 && seq.every((x, i) => !i || x !== seq[i - 1])) say(pattern, pickOf(plan, 'pattern', PHRASES.alternate));
+  const mid = seq[(n - 1) / 2];
+  if (!mirror && n % 2 === 1 && n >= 5 && k < n && count(mid) === 1) say(pattern, fill(pickOf(plan, 'pattern', PHRASES.center), { wood: lc(woodById(mid)) }), [mid]);
+  const total = seq.reduce((a, id, i) => a + widthOf(i), 0), share = {};
+  seq.forEach((id, i) => share[id] = (share[id] || 0) + widthOf(i) / total);
+  const top = Object.entries(share).sort((a, b) => b[1] - a[1])[0];
+  if (top && top[1] > .55 && k >= 2 && k <= 3) say(pattern, fill(pickOf(plan, 'pattern', PHRASES.mostly), { wood: lc(woodById(top[0])), others: joinList(woods.filter(w => w.id !== top[0]).map(lc)) }), [top[0]]);
+  if (W) {
+    const wide = Math.max(...W), thinAt = seq.map((id, i) => W[i] <= .25 + 1e-6 ? id : null).filter(Boolean), thin = [...new Set(thinAt)];
+    if (thin.length && wide >= .5) say(pattern, thinAt.length === 1
+      ? fill(pickOf(plan, 'pattern', PHRASES.pinstripe1), { wood: lc(woodById(thin[0])) })
+      : fill(pickOf(plan, 'pattern', PHRASES.pinstripe), { woods: joinList(thin.map(id => lc(woodById(id)))) }), thin);
+  }
+  const pop = woods.filter(w => WOOD_POP.includes(w.id)).sort((a, b) => count(a.id) - count(b.id))[0];
+  if (pop) say(look, fill(pickOf(plan, 'look', count(pop.id) === 1 ? PHRASES.pop : PHRASES.pops), { tone: toneOf(pop), wood: lc(pop) }), [pop.id]);
+  const byLum = [...woods].sort((a, b) => lum(a.color) - lum(b.color)), dk = byLum[0], lt = byLum[byLum.length - 1];
+  if (dk && lt && dk !== lt && lum(lt.color) - lum(dk.color) >= 100)
+    say(look, fill(pickOf(plan, 'look', PHRASES.contrast), { Tone1: cap(toneOf(dk)), tone1: toneOf(dk), wood1: lc(dk), tone2: toneOf(lt), wood2: lc(lt) }), [dk.id, lt.id]);
+  const conts = new Set(woods.map(w => continentOf(w.origin)).filter(Boolean));
+  if (conts.size >= 3) say(trivia, fill(pickOf(plan, 'obs', PHRASES.continents), { k: numWord(conts.size) }));
+  const hardest = [...woods].sort((a, b) => (b.janka || 0) - (a.janka || 0))[0];
+  if (hardest && hardest.janka >= 2500) say(trivia, fill(pickOf(plan, 'obs', PHRASES.hard), { wood: lc(hardest), janka: Number(hardest.janka).toLocaleString('en-US'), cmp: hardest.janka >= 2900 ? 'about twice as hard as hard maple' : 'far harder than hard maple' }), [hardest.id]);
+  // Up to two of them, never two about the same wood, and which kinds get the spot changes from piece to piece
+  const groups = [pattern, look, trivia], order = pickOf(plan, 'obs', [[0, 1, 2], [1, 0, 2], [0, 2, 1], [2, 0, 1], [1, 2, 0]]), chosen = [], used = new Set();
+  for (const gi of order) {
+    const pickd = groups[gi].find(o => !o.ids.some(id => used.has(id)));
+    if (pickd && chosen.length < 2) { chosen.push(pickd.text); pickd.ids.forEach(id => used.add(id)); }
+  }
+  out.push(...chosen);
+  return out.filter(Boolean).join(' ');
 }
-const storyOf = p => p.storyEdited && p.story ? p.story : genStory(p);
+// The templates it was cut from, and where each shape came from
+function designParagraph(p, plan) {
+  const type = typeById(p.type);
+  if (type.board && p.board) return boardStory(p.board).join(' ');
+  const parts = type.slots.map(s => ({ slot: s.name.toLowerCase(), t: tplById((p.templates || {})[s.name]) })).filter(x => x.t);
+  if (!parts.length) return '';
+  if (parts.length === 2) {
+    const [a, b] = parts;
+    return [fill(pickOf(plan, 'pair', PHRASES.pair), { a: a.t.name, sa: a.slot, b: b.t.name, sb: b.slot }), a.t.inspiration, b.t.inspiration].filter(Boolean).join(' ');
+  }
+  return parts.map(x => [fill(pickOf(plan, 'pair', PHRASES.part), { a: x.t.name, sa: x.slot }), x.t.inspiration].filter(Boolean).join(' ')).join(' ');
+}
+function buildLine(p, plan) {
+  const t = typeById(p.type), d = DEFAULT_TYPES.find(x => x.id === t.id);
+  if (!t.build) return '';
+  if (d && t.build === d.build && BUILD_ALTS[t.id]) return pickOf(plan, 'build', [d.build, ...BUILD_ALTS[t.id]]);
+  return t.build;
+}
+function finishLine(p, plan) {
+  const f = finishByName(p.finish); if (!f || !f.story) return '';
+  const d = DEFAULT_FINISHES.find(x => x.name === f.name);
+  if (d && f.story === d.story && FINISH_ALTS[f.name]) return pickOf(plan, 'fin', [d.story, ...FINISH_ALTS[f.name]]);
+  return f.story;
+}
+function closingLine(p, plan, depth = 0) {
+  const key = 'close:' + p.id + ':' + p.no; if (planCache.has(key)) return planCache.get(key);
+  const t = typeById(p.type), extra = t.id === 'knife' || t.id === 'lame' ? PHRASES.closeKnife : t.board ? PHRASES.closeBoard : t.bowl ? PHRASES.closeBowl : t.byKind ? PHRASES.closeTool : [];
+  const list = [...PHRASES.closing, ...extra];
+  let i = Math.floor(plan.close * list.length) % list.length;
+  // never the same last line as the piece numbered just before it, even when it's a different kind of piece
+  const prev = depth < 6 ? prevPiece(p) : null;
+  if (prev && closingLine(prev, storyPlan(prev), depth + 1) === list[i]) i = (i + 1) % list.length;
+  planCache.set(key, list[i]); return list[i];
+}
+// What the buyer reads about each wood. These fold away under "Tell me more about the woods" on the story page.
+function woodNotes(p) {
+  return uniqWoods(p.woods).filter(w => w.story).map(w => LIB.some(l => l.id === w.id) && w.story === LIB.find(l => l.id === w.id).story ? w.story : `About the ${w.name.toLowerCase()}: ${w.story}`);
+}
+function genStory(p) {
+  const st = S.settings, plan = storyPlan(p), lc = s => s.toLowerCase();
+  const maker = (st.maker || '').trim(), shop = (st.shop || '').trim();
+  const made = maker && shop ? `made by ${maker} at ${shop}` : maker ? `made by ${maker}` : shop ? `made at ${shop}` : 'made by hand';
+  const noun = lc(typeName(p));
+  const openT = pickOf(plan, 'open', PHRASES.open);
+  let open = fill(openT, { no: pad(p.no), noun, a: an(noun), made, when: p.date ? ` in ${monthYear(p.date)}` : '' });
+  if (!/only one|Every piece/.test(openT) && plan.unique < .55) open += ' ' + pickOf(plan, 'unique', PHRASES.unique);
+  const special = p.special && p.special.trim() ? p.special.trim().replace(/([^.!?"”])$/, '$1.') : '';
+  const wood = woodParagraph(p, plan), design = designParagraph(p, plan);
+  const making = [buildLine(p, plan), finishLine(p, plan)].filter(Boolean).join(' ');
+  const care = careOf(p) ? 'Care: ' + careOf(p) : '';
+  const close = closingLine(p, plan) + (maker ? `\n— ${maker}` : '');
+  const shapes = [
+    [open, special, wood, design, making],
+    [open, special, design, wood, making],
+    [[open, wood].filter(Boolean).join(' '), special, design, making],
+    [open, [wood, design].filter(Boolean).join(' '), special, making]
+  ];
+  const body = pickOf(plan, 'shape', shapes);
+  return [...body, ...woodNotes(p), care, close].filter(x => x && x.trim()).join('\n\n');
+}
+// A piece's story stays put once it's sold, so a buyer's page doesn't change under them. You can still edit it or rewrite it.
+const storyOf = p => (p.storyEdited || p.storyLocked) && p.story ? p.story : genStory(p);
 
 const featList = bd => [bd.groove && 'juice groove', bd.grips && 'finger grips', bd.feet && 'rubber feet', bd.profile === 'round' && 'rounded edges', bd.profile === 'chamfer' && 'chamfered edges'].filter(Boolean);
 function claudePrompt(p) {
@@ -368,29 +511,41 @@ function claudePrompt(p) {
   return lines.join('\n');
 }
 
-function genListing(p) {
-  const st = S.settings, t = typeById(p.type), woods = uniqWoods(p.woods).map(w => w.name), L = [];
-  L.push(`Handmade ${typeName(p).toLowerCase()}${woods.length ? ' — ' + joinList(woods) : ''}`);
+// Listings: a title, a price and a description, written from the piece's details
+function listingTitles(p) {
+  const t = typeName(p), lc = t.toLowerCase(), ws = uniqWoods(p.woods).map(w => w.name.toLowerCase()), type = typeById(p.type);
+  const few = ws.length > 3 ? `${ws.slice(0, 2).join(', ')} & ${ws.length - 2} more woods` : ws.length ? ws.join(', ').replace(/, ([^,]*)$/, ' & $1') : '';
+  const out = [
+    `Handmade ${lc}${few ? ` – ${few}` : ''}`,
+    `${t} No. ${pad(p.no)}, handmade${ws.length > 1 && !type.board && !type.bowl ? ` from ${p.woods.length} strips` : ''}`,
+    ws.length ? `${cap(ws[0])} ${ws.length > 1 ? `& ${ws[1]} ` : ''}${lc}, one of a kind` : `One of a kind ${lc}`
+  ];
+  return [...new Set(out.map(x => x.length > 99 ? x.slice(0, 98) + '…' : x))];
+}
+function genListing(p, style = 'full') {
+  const st = S.settings, t = typeById(p.type), woods = uniqWoods(p.woods).map(w => w.name.toLowerCase()), L = [];
+  const what = typeName(p).toLowerCase(), lam = p.woods.length > 1 && !t.bowl && !t.board;
+  L.push(`Handmade ${what}, No. ${pad(p.no)}. ${lam ? `Laminated from ${numWord(p.woods.length)} strips of ${joinList(woods)}, so no two are alike.` : woods.length ? `Made from ${joinList(woods)}. One of a kind.` : 'One of a kind.'}`);
+  if (p.special && p.special.trim()) L.push(p.special.trim().replace(/([^.!?"”])$/, '$1.'));
+  if (style === 'short') { if (st.listingEnd) { L.push(''); L.push(st.listingEnd); } return L.join('\n'); }
   L.push('');
-  L.push(`One of a kind and numbered (No. ${pad(p.no)}). Made by hand, start to finish.`);
-  if (p.special) L.push(p.special.trim());
-  L.push('');
-  if (woods.length) L.push(`• Woods: ${joinList(woods.map(w => w.toLowerCase()))}${p.woods.length > 1 && !t.bowl && !t.board ? ` (${p.woods.length} laminated strips)` : ''}`);
-  t.slots.forEach(s => { const x = tplById((p.templates || {})[s.name]); if (x) L.push(`• ${s.name}: ${x.name}`); });
+  const parts = t.slots.map(s => { const x = tplById((p.templates || {})[s.name]); return x ? `${x.name} ${s.name.toLowerCase()}` : ''; }).filter(Boolean);
+  if (parts.length) L.push(`• ${cap(joinList(parts))}`);
+  if (t.id === 'knife' && /stainless/i.test(t.build || '')) L.push('• Stainless steel bread blade');
   if (t.bowl && p.bowl) {
-    L.push(`• ${p.bowl.kind === 'seg' ? `Segmented: ${B.pieceCount(p.bowl)} pieces in ${p.bowl.rings.length} rings + base` : p.bowl.kind === 'epoxy' ? `Solid ${uniqWoods(p.woods).map(w => w.name.toLowerCase()).join(', ')} with ${p.bowl.epoxy ? p.bowl.epoxy.toLowerCase() + ' ' : ''}epoxy` : 'Turned from one solid blank'}`);
-    L.push(`• Size: about ${B.frac(p.bowl.D)} across × ${B.frac(p.bowl.H)} tall`);
+    L.push(`• ${p.bowl.kind === 'seg' ? `Segmented: ${B.pieceCount(p.bowl)} pieces in ${p.bowl.rings.length} rings` : p.bowl.kind === 'epoxy' ? `Solid wood with ${p.bowl.epoxy ? p.bowl.epoxy.toLowerCase() + ' ' : ''}epoxy` : 'Turned from one solid piece'}`);
+    L.push(`• About ${B.frac(p.bowl.D)} across and ${B.frac(p.bowl.H)} tall`);
   }
   if (t.board && p.board) {
     const bd = p.board;
-    L.push(`• ${boardTitle(bd)}${bd.style !== 'edge' ? ` · ${BD.blocks(bd)} pieces` : ''}`);
-    L.push(`• Size: ${BD.frac(BD.lengthOf(bd))} × ${BD.frac(BD.widthOf(bd))} × ${BD.frac(bd.T)}`);
+    L.push(`• ${boardTitle(bd)}${bd.style !== 'edge' ? `, ${BD.blocks(bd)} pieces` : ''}`);
+    L.push(`• ${BD.frac(BD.lengthOf(bd))} × ${BD.frac(BD.widthOf(bd))} × ${BD.frac(bd.T)}`);
     const f = featList(bd); if (f.length) L.push(`• ${cap(joinList(f))}`);
   }
-  if (p.finish && p.finish !== 'Unfinished') L.push(`• Finish: ${p.finish}${/rubio|mineral|butter|food/i.test(p.finish) ? ' (food safe)' : ''}`);
-  if (p.size) L.push(`• Size: ${p.size}`);
-  if (st.pageUrl) L.push('• Comes with a QR tag that tells its story');
-  if (p.price) { L.push(''); L.push(`$${String(p.price).replace(/^\$/, '')}`); }
+  if (p.size) L.push(`• About ${p.size} long`);
+  if (p.finish && p.finish !== 'Unfinished') L.push(`• Finished with ${p.finish.toLowerCase().replace('rubio monocoat', 'Rubio Monocoat')}${/rubio|mineral|butter|food/i.test(p.finish) ? ' (food safe)' : ''}`);
+  if (st.pageUrl) L.push(`• Comes with a tag. Scan it to read this ${nounOf(p)}'s story`);
+  const care = careOf(p); if (care) { L.push(''); L.push('Care: ' + care.split('. ')[0].replace(/\.$/, '') + '.'); }
   if (st.listingEnd) { L.push(''); L.push(st.listingEnd); }
   return L.join('\n');
 }
@@ -548,7 +703,7 @@ function autoPublish(delay = 0) {
 async function readyLinks(list) {
   if (ghOn() && (list.some(p => !p.pubId || p.pubHash !== pubHash(p)) || S.settings.gh.pageVer !== pageVersion())) {
     try { await publishPieces(list); }
-    catch (e) { toast(e.status === 401 ? 'GitHub code stopped working. Reconnect in Settings. Using the long QR for now.' : 'Couldn’t upload (no internet?). Using the long QR, which still works.'); }
+    catch (e) { toast(e.status === 401 ? 'The GitHub code stopped working. Set it up again in Shop, Story page and QR codes. Using the long QR for now.' : 'Couldn’t upload (no internet?). Using the long QR, which still works.'); }
   }
   return Promise.all(list.map(pageLink));
 }
@@ -603,21 +758,21 @@ function askPrint(p) {
 
 /* ---------- Printed cards: logo + email + this piece's QR ---------- */
 const DPI = 300;
-function fitText(g, text, font, maxW, size) { do { g.font = font.replace('#', size); } while (g.measureText(text).width > maxW && --size > 10); }
+function fitText(g, text, font, maxW, size, stretch = 'normal') { do { g.font = font.replace('#', size); g.fontStretch = stretch; } while (g.measureText(text).width > maxW && --size > 10); }
 function cardFace(g, x, y, w, h, logo, big) {   // logo and email
   const st = S.settings, email = (st.email || '').trim();
-  g.fillStyle = '#1d1611'; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  g.fillStyle = '#223626'; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
   const cy = y + h / 2 - (email ? 28 : 0);
   if (logo) { const lw = Math.min(w * (big ? .78 : .86), (h * (big ? .5 : .42)) * logo.width / logo.height), lh = lw * logo.height / logo.width; g.drawImage(logo, x + (w - lw) / 2, cy - lh / 2, lw, lh); }
-  else { fitText(g, st.shop || st.maker || 'Handmade', '600 #px Fraunces, Georgia, serif', w * .85, 64); g.fillText(st.shop || st.maker || 'Handmade', x + w / 2, cy + 20); }
-  if (email) { g.fillStyle = '#3a2f27'; fitText(g, email, '500 #px system-ui, sans-serif', w * .88, big ? 38 : 33); g.fillText(email, x + w / 2, y + h - (big ? 120 : 92)); }
+  else { fitText(g, st.shop || st.maker || 'Handmade', '760 #px Archivo, sans-serif', w * .85, 64, 'expanded'); g.fillText(st.shop || st.maker || 'Handmade', x + w / 2, cy + 20); }
+  if (email) { g.fillStyle = '#3e4c44'; fitText(g, email, '500 #px Archivo, sans-serif', w * .88, big ? 38 : 33); g.fillText(email, x + w / 2, y + h - (big ? 120 : 92)); }
 }
 function cardQR(g, x, y, w, h, p, link, logo) {   // this piece's QR
   const size = Math.min(w - 40, h - 170), q = qrCanvas(link, size, logo);
   g.drawImage(q, Math.round(x + (w - q.width) / 2), Math.round(y + 34 + (size - q.width) / 2));   // whole pixels per square keeps the edges sharp
-  g.fillStyle = '#1d1611'; g.textAlign = 'center';
-  fitText(g, `No. ${pad(p.no)}`, '600 #px Fraunces, Georgia, serif', w - 40, 40); g.fillText(`No. ${pad(p.no)}`, x + w / 2, y + size + 80);
-  g.fillStyle = '#6b5b4e'; const cap = `Scan for the story of your ${nounOf(p)}`; fitText(g, cap, '#px system-ui, sans-serif', w - 40, 27); g.fillText(cap, x + w / 2, y + size + 114);
+  g.fillStyle = '#15211a'; g.textAlign = 'center';
+  fitText(g, `No. ${pad(p.no)}`, '760 #px Archivo, sans-serif', w - 40, 40, 'expanded'); g.fillText(`No. ${pad(p.no)}`, x + w / 2, y + size + 80); g.fontStretch = 'normal';
+  g.fillStyle = '#4e5c54'; const cap = `Scan for the story of your ${nounOf(p)}`; fitText(g, cap, '500 #px Archivo, sans-serif', w - 40, 27); g.fillText(cap, x + w / 2, y + size + 114);
 }
 // One card, 3.5 x 2 in (side by side) or 3.5 x 4 in (folds to 3.5 x 2: logo on the front, QR on the back)
 function cardCanvas(p, link, logo, style) {
@@ -629,7 +784,7 @@ function cardCanvas(p, link, logo, style) {
     g.save(); g.setTransform(-1, 0, 0, -1, W, H / 2); cardQR(g, 0, 0, W, H / 2, p, link, logo); g.restore();
   } else {
     cardFace(g, 0, 0, W * .5, H, logo, false);
-    g.strokeStyle = '#e6ddd2'; g.lineWidth = 2; g.beginPath(); g.moveTo(W * .5, 70); g.lineTo(W * .5, H - 70); g.stroke();
+    g.strokeStyle = '#dde3dc'; g.lineWidth = 2; g.beginPath(); g.moveTo(W * .5, 70); g.lineTo(W * .5, H - 70); g.stroke();
     cardQR(g, W * .5, 0, W * .5, H, p, link, logo);
   }
   return c;
@@ -644,12 +799,12 @@ function cardSheets(cards, style) {
     const chunk = cards.slice(i, i + per);
     chunk.forEach((card, k) => g.drawImage(card, mx + (k % cols) * cw, my + Math.floor(k / cols) * ch));
     const usedRows = Math.ceil(chunk.length / cols);
-    g.strokeStyle = '#c9c1b8'; g.lineWidth = 2;
+    g.strokeStyle = '#c4cdc5'; g.lineWidth = 2;
     const xs = [0, 1, 2].map(k => mx + k * cw), ys = [...Array(usedRows + 1)].map((_, k) => my + k * ch);
     for (const x of xs) { g.beginPath(); g.moveTo(x, my - 90); g.lineTo(x, ys[usedRows] + 90); g.stroke(); }
     for (const y of ys) { g.beginPath(); g.moveTo(mx - 90, y); g.lineTo(mx + cols * cw + 90, y); g.stroke(); }
-    if (style === 'fold') { g.setLineDash([14, 12]); g.strokeStyle = '#b8aea3'; for (let r = 0; r < usedRows; r++) { const y = my + r * ch + ch / 2; g.beginPath(); g.moveTo(mx, y); g.lineTo(mx + cols * cw, y); g.stroke(); } g.setLineDash([]); }
-    g.fillStyle = '#9a8f85'; g.font = '30px system-ui, sans-serif'; g.textAlign = 'left';
+    if (style === 'fold') { g.setLineDash([14, 12]); g.strokeStyle = '#a9b4ab'; for (let r = 0; r < usedRows; r++) { const y = my + r * ch + ch / 2; g.beginPath(); g.moveTo(mx, y); g.lineTo(mx + cols * cw, y); g.stroke(); } g.setLineDash([]); }
+    g.fillStyle = '#7f8b83'; g.font = '500 30px Archivo, sans-serif'; g.textAlign = 'left';
     g.fillText(style === 'fold' ? 'Cut on the solid lines, fold on the dashed line. Print at 100% / actual size.' : 'Cut on the lines. Print at 100% / actual size.', mx, PH - 70);
     pages.push(c);
   }
@@ -664,7 +819,7 @@ function printPages(pages, job) {
 }
 async function printCardsSheet(first) {
   const st = S.settings, logo = await loadImg(logoSrc());
-  try { await document.fonts.load('600 40px Fraunces'); } catch (e) {}
+  try { await document.fonts.load('760 40px Archivo'); await document.fonts.load('500 30px Archivo'); } catch (e) {}
   const others = S.pieces.filter(q => q.id !== first.id && q.status !== 'building' && !q.printed).sort((a, b) => b.no - a.no).slice(0, 40), picked = new Set([first.id]);
   let firstLink = null;
   let style = st.cardStyle === 'fold' ? 'fold' : 'side';
@@ -674,10 +829,10 @@ async function printCardsSheet(first) {
     const card = cardCanvas(first, firstLink, logo, style);
     $('#cprev').innerHTML = `<img src="${card.toDataURL()}" alt="Card preview">`;
     const n = picked.size, sheets = Math.ceil(n / per());
-    $('#ccount').textContent = `${n} card${n === 1 ? '' : 's'} · ${sheets} sheet${sheets === 1 ? '' : 's'} · room for ${sheets * per() - n} more`;
+    $('#ccount').textContent = `${n} card${n === 1 ? '' : 's'} on ${sheets} sheet${sheets === 1 ? '' : 's'}, room for ${sheets * per() - n} more`;
   };
   openSheet(`<h2>Print cards</h2>
-    <div class="seg" id="cstyle"><button data-s="side" class="${style === 'side' ? 'on' : ''}">One side · 10 a page</button><button data-s="fold" class="${style === 'fold' ? 'on' : ''}">Fold-over · 4 a page</button></div>
+    <div class="seg" id="cstyle"><button data-s="side" class="${style === 'side' ? 'on' : ''}">One side, 10 a page</button><button data-s="fold" class="${style === 'fold' ? 'on' : ''}">Fold-over, 4 a page</button></div>
     <div class="cardprev" id="cprev" style="margin-top:14px;${style === 'fold' ? 'max-width:220px;margin-left:auto;margin-right:auto' : ''}"></div>
     <p class="note" id="cnote">${style === 'fold' ? 'Fold on the dashed line: logo and email on the front, QR on the back.' : 'Logo and email on the left, this piece&rsquo;s QR on the right.'}${(st.email || '').trim() ? '' : ' Add your email in Settings to print it on the card.'}</p>
     ${others.length ? `<div class="tray-h" style="margin-top:16px">Fill the page with more pieces</div><div id="cmore">${others.map(q => `<button class="pickrow" data-pk="${q.id}"><span class="box"></span><span class="grow">${esc(typeName(q))} <span class="muted">No. ${pad(q.no)}</span></span></button>`).join('')}</div>` : ''}
@@ -703,15 +858,16 @@ async function printCardsSheet(first) {
 function tagCanvas(p, url, logo) {
   const st = S.settings, W = 1000, H = 1300, c = document.createElement('canvas'); c.width = W; c.height = H;
   const g = c.getContext('2d');
-  g.fillStyle = '#fbf7f1'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
   const ws = colsOf(p), tot = ws.reduce((a, w) => a + (w.w || 1), 0); let x0 = 0;
   ws.forEach(w => { const bw = W * (w.w || 1) / tot; g.fillStyle = w.color; g.fillRect(x0, 0, bw + 1, 46); x0 += bw; });
-  g.fillStyle = '#1d1611'; g.textAlign = 'center';
-  g.font = '600 46px Fraunces, "Noto Serif", Georgia, serif'; g.fillText(st.shop || (st.maker ? `Made by ${st.maker}` : 'Handmade'), W / 2, 140);
-  g.font = '600 76px Fraunces, "Noto Serif", Georgia, serif'; g.fillText(`No. ${pad(p.no)}`, W / 2, 240);
-  const q = qrCanvas(url, 740, logo); g.drawImage(q, Math.round((W - q.width) / 2), Math.round(290 + (740 - q.width) / 2));
-  g.font = '40px Fraunces, "Noto Serif", Georgia, serif'; g.fillStyle = '#4a3b30'; g.fillText(`Scan to read the story of your ${nounOf(p)}`, W / 2, 1110);
-  g.font = '32px system-ui, sans-serif'; g.fillStyle = '#7a6a5c'; g.fillText(uniqWoods(p.woods).map(w => w.name).join(' · '), W / 2, 1175);
+  g.textAlign = 'center';
+  if (logo) { const lw = Math.min(W * .62, 150 * logo.width / logo.height), lh = lw * logo.height / logo.width; g.drawImage(logo, (W - lw) / 2, 92, lw, lh); }
+  else { g.fillStyle = '#223626'; g.font = '600 44px Archivo, sans-serif'; g.fillText(st.shop || (st.maker ? `Made by ${st.maker}` : 'Handmade'), W / 2, 150); }
+  g.fillStyle = '#15211a'; g.font = '760 80px Archivo, sans-serif'; g.fontStretch = 'expanded'; g.fillText(`No. ${pad(p.no)}`, W / 2, 330); g.fontStretch = 'normal';
+  const q = qrCanvas(url, 680, logo); g.drawImage(q, Math.round((W - q.width) / 2), Math.round(370 + (680 - q.width) / 2));
+  g.font = '560 38px Archivo, sans-serif'; g.fillStyle = '#223626'; g.fillText(`Scan to read the story of your ${nounOf(p)}`, W / 2, 1125);
+  g.font = '450 31px Archivo, sans-serif'; g.fillStyle = '#5a675f'; g.fillText(uniqWoods(p.woods).map(w => w.name).join(', '), W / 2, 1185);
   return c;
 }
 
@@ -800,6 +956,19 @@ async function addPhotos(list) {
   return added;
 }
 
+/* ---------- Light and dark ---------- */
+// "Match phone" follows the phone's dark mode; Light and Dark stay put. The status bar follows along.
+function systemDark() { try { return bridge && bridge.systemDark ? !!bridge.systemDark() : matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) { return false; } }
+function applyTheme() {
+  const t = S.settings.theme || 'auto', dark = t === 'dark' || (t === 'auto' && systemDark()), root = document.documentElement;
+  root.dataset.theme = dark ? 'dark' : 'light';
+  const css = getComputedStyle(root), bg = css.getPropertyValue('--bg').trim(), bar = css.getPropertyValue('--surface').trim();
+  $('meta[name=theme-color]')?.setAttribute('content', bg);
+  try { if (bridge && bridge.setBars) bridge.setBars(bg, bar, !dark); } catch (e) {}
+}
+window.benchSystemTheme = () => { if ((S.settings.theme || 'auto') === 'auto') applyTheme(); };
+try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => window.benchSystemTheme()); } catch (e) {}
+
 /* ---------- Shell ---------- */
 let tab = 'pieces', stack = [];
 // Snackbar, with an optional action like Undo
@@ -811,7 +980,7 @@ function toast(msg, o = {}) {
   if (o.action) $('#tAct').onclick = () => { t.hidden = true; clearTimeout(t._h); o.onAction && o.onAction(); };
   t._h = setTimeout(() => { t.hidden = true; o.onTimeout && o.onTimeout(); }, o.action ? 5000 : 2600);
 }
-function setTop(title, actions = '', back = stack.length > 1) { $('#title').textContent = title; $('#topActions').innerHTML = actions; $('#backBtn').hidden = !back; }
+function setTop(title, actions = '', back = stack.length > 1) { $('#title').textContent = title; $('#topActions').innerHTML = actions; $('#backBtn').hidden = !back; $('#top').classList.toggle('sub', !!back); }
 function go(view, params = {}) { stack.push({ view, params }); render(true); scrollTo(0, 0); }
 function back() {
   if (typeof V3 !== 'undefined' && V3.close()) return true;
@@ -876,18 +1045,8 @@ function onScroll() {
   $$('.fab').forEach(f => f.classList.toggle('fold', y > 60));
 }
 addEventListener('scroll', onScroll, { passive: true });
-// Soft honey bloom where the finger lands (instead of a ripple)
-const BLOOM = '.btn, button.listrow, button.chip, .seg button, .filters button, .wood, .tpl, .preset, .kp button, .stepper button, .fab, .icon, .tl, .piece, .patpick, .swrow, .lockbtn, .meas, .mini';
-document.addEventListener('pointerdown', e => {
-  const el = e.target.closest && e.target.closest(BLOOM); if (!el) return;
-  const r = el.getBoundingClientRect(); el.style.setProperty('--bx', (e.clientX - r.left) + 'px'); el.style.setProperty('--by', (e.clientY - r.top) + 'px');
-  el.classList.add('bloom');
-  const off = () => { setTimeout(() => el.classList.remove('bloom'), 90); removeEventListener('pointerup', off); removeEventListener('pointercancel', off); };
-  addEventListener('pointerup', off); addEventListener('pointercancel', off);
-}, { passive: true });
-
 const ICON = {
-  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
   share: '<svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg>',
   plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/></svg>',
@@ -898,28 +1057,34 @@ const ICON = {
   search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
   lock: '<svg viewBox="0 0 24 24"><path d="M9.5 14.5l5-5"/><path d="M11 6.5l1.6-1.6a4.2 4.2 0 0 1 6 6L17 12.5M13 17.5l-1.6 1.6a4.2 4.2 0 0 1-6-6L7 11.5"/></svg>',
   unlock: '<svg viewBox="0 0 24 24"><path d="M11 6.5l1.6-1.6a4.2 4.2 0 0 1 6 6L17 12.5M13 17.5l-1.6 1.6a4.2 4.2 0 0 1-6-6L7 11.5"/><path d="M5 5l2 2M19 19l-2-2"/></svg>',
-  grip: '<svg viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>'
+  grip: '<svg viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
+  more: '<svg viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/></svg>',
+  close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  chev: '<svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  tag: '<svg viewBox="0 0 24 24"><path d="M3.5 12.5V4.5h8l9 9-8 8z"/><circle cx="8" cy="9" r="1.5"/></svg>',
+  card: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M12 6v12" stroke-dasharray="2 2"/><path d="M5.5 10h4M5.5 13h3"/><rect x="14.5" y="9" width="4" height="4" rx=".5"/></svg>',
+  page: '<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg>',
+  camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2.5h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+  combo: '<svg viewBox="0 0 24 24"><path d="M2.5 14.2c0-1.6 1.2-2.7 2.6-2.7 1.1 0 1.8.6 2.4 1.2h10.6l3.4-4.4"/><path d="M7.5 15.3c-.6.6-1.3 1.2-2.4 1.2-1.4 0-2.6-1.1-2.6-2.3"/><path d="M7.5 15.3h11.2l2.8-6.5"/><circle cx="5.1" cy="14" r=".9"/></svg>',
+  user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg>',
+  globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.6 3.8 5.4 3.8 8.5S14.6 17.9 12 20.5M12 3.5C9.4 6.1 8.2 8.9 8.2 12s1.2 5.9 3.8 8.5"/></svg>',
+  shapes: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><circle cx="16.5" cy="7.5" r="3.5"/><path d="M4 20l3.5-6 3.5 6zM13 13.5h7v6.5h-7z"/></svg>',
+  drop: '<svg viewBox="0 0 24 24"><path d="M12 3.5c3.5 4.4 5.5 7.6 5.5 10.2a5.5 5.5 0 0 1-11 0C6.5 11.1 8.5 7.9 12 3.5z"/></svg>',
+  sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>',
+  save: '<svg viewBox="0 0 24 24"><path d="M12 3v11M7.5 9.5L12 14l4.5-4.5M5 16v4h14v-4"/></svg>',
+  store: '<svg viewBox="0 0 24 24"><path d="M4 9.5l1.6-5h12.8L20 9.5"/><path d="M4 9.5c0 1.5 1.2 2.5 2.7 2.5s2.6-1 2.6-2.5c0 1.5 1.2 2.5 2.7 2.5s2.7-1 2.7-2.5c0 1.5 1.1 2.5 2.6 2.5S20 11 20 9.5"/><path d="M5.5 12v7.5h13V12"/></svg>',
+  text: '<svg viewBox="0 0 24 24"><path d="M5 6h14M5 10h14M5 14h9M5 18h6"/></svg>',
+  photo: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l5-5 4 4 3-3 4 4"/></svg>',
+  open: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5H5V6h5"/></svg>'
 };
+const statusWordOf = s => s === 'sold' ? 'Sold' : s === 'available' ? 'Finished' : 'Building';
 const statusChip = s => s === 'sold' ? '<span class="chip sold">Sold</span>' : s === 'available' ? '<span class="chip avail">Finished</span>' : '<span class="chip">Building</span>';
-const stageOf = p => p.status === 'sold' ? 1 : p.status === 'available' ? 2 / 3 : 1 / 3;
-// Grain-line progress: wavy where it's done so far, a flat track for what's left, straight once it's complete
-let sqN = 0;
-function squiggle(frac, o = {}) {
-  const W = Math.max(30, Math.round(o.w || 160)), H = 14, mid = 7, amp = o.amp ?? 2.6, wl = o.wl || 20, sw = o.sw || 4;
-  frac = Math.max(0, Math.min(1, frac)); const done = frac >= 1, col = o.color || (done ? 'var(--ok)' : 'var(--accent)');
-  if (done) return `<svg class="squig" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><path d="M2 ${mid}H${W - 2}" stroke="${col}" stroke-width="${sw}" stroke-linecap="round"/></svg>`;
-  const fx = 2 + frac * (W - 4), gap = 7, id = 'sq' + (++sqN);
-  let d = `M${-wl} ${mid}`; for (let x = -wl, k = 0; x < fx + wl; x += wl / 2, k++) d += ` Q${(x + wl / 4).toFixed(1)} ${mid + (k % 2 ? 2 * amp : -2 * amp)} ${(x + wl / 2).toFixed(1)} ${mid}`;
-  const wave = fx > 3 ? `<clipPath id="${id}"><rect x="0" y="0" width="${fx.toFixed(1)}" height="${H}"/></clipPath><g clip-path="url(#${id})"><path class="${o.animate ? 'wv' : ''}" style="--wl:${-wl}px" d="${d}" fill="none" stroke="${col}" stroke-width="${sw}" stroke-linecap="round"/></g>` : '';
-  const t0 = Math.min(W - 2, fx + gap);
-  return `<svg class="squig" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${wave}${t0 < W - 3 ? `<path d="M${t0.toFixed(1)} ${mid}H${W - 2}" stroke="var(--line)" stroke-width="${sw}" stroke-linecap="round"/>` : ''}<circle cx="${W - 2}" cy="${mid}" r="2" fill="${col}"/></svg>`;
-}
-const squigInto = (el, frac, o = {}) => { if (el) el.innerHTML = squiggle(frac, { ...o, w: el.clientWidth || o.w || 200 }); };
+const statusTag = s => `<span class="status ${s === 'sold' ? 'sold' : s === 'available' ? 'ready' : ''}">${statusWordOf(s)}</span>`;
 function spinner() {
   let d = ''; for (let i = 0; i <= 280; i += 4) { const t = i * Math.PI / 180, r = 15 + 1.8 * Math.sin(10 * t); d += (i ? 'L' : 'M') + (22 + r * Math.cos(t)).toFixed(2) + ' ' + (22 + r * Math.sin(t)).toFixed(2); }
   return `<svg class="spin" viewBox="0 0 44 44"><path d="${d}" fill="none" stroke="var(--accent)" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
-const modeSeg = (cur, id = 'mode') => `<div class="seg" id="${id}"><button data-m="finished" class="${cur === 'finished' ? 'on' : ''}">Finished</button><button data-m="templates" class="${cur === 'templates' ? 'on' : ''}">Templates</button><button data-m="3d">3D</button></div>`;
 let viewMode = 'finished';
 function open3D(p) {
   const t = typeById(p.type), title = esc(p.no ? pieceTitle(p) : typeName(p));
@@ -930,14 +1095,7 @@ function open3D(p) {
   if (t.board) { if (!p.board) return; return V3.open(() => V3.board(p.board, woodById, seedOf(p)), null, title, { rotX: .62, rotY: -.45 }); }
   const ts = pieceTpls(p); if (!ts.length) return toast('Pick the parts first'); V3.open(D.assemble(ts), colsOf(p), title, { angle: p.angle || 0 });
 }
-function bindMode(root, redraw, id = 'mode', piece = null) {
-  $$(`#${id} [data-m]`, root).forEach(b => b.onclick = () => {
-    if (b.dataset.m === '3d') { const p = typeof piece === 'function' ? piece() : piece; if (p) open3D(p); return; }
-    viewMode = b.dataset.m; $$(`#${id} [data-m]`, root).forEach(x => x.classList.toggle('on', x === b)); redraw();
-  });
-}
-
-/* ---------- Tape-measure keypad ---------- */
+/* ---------- Measuring keypad ---------- */
 // o: { title, value, min, max, quick: [inches], info: v => html, onSet: v, zero: allow 0, fine: start in sixteenths }
 function measure(o) {
   const min = o.min ?? 0, max = o.max ?? 48, ppi = max <= 3 ? 120 : max <= 10 ? 84 : 44;
@@ -971,9 +1129,9 @@ function measure(o) {
       const x = c + (k / 16 - v) * ppi, lvl = k % 16 === 0 ? 4 : k % 8 === 0 ? 3 : k % 4 === 0 ? 2 : k % 2 === 0 ? 1 : 0;
       if (ppi < 60 && lvl === 0) continue;
       const h = [8, 12, 17, 23, 32][lvl];
-      g.strokeStyle = '#2b1907'; g.globalAlpha = lvl === 4 ? 1 : .78; g.lineWidth = lvl >= 3 ? 1.8 : 1.2;
+      g.strokeStyle = '#1f2a23'; g.globalAlpha = lvl === 4 ? 1 : .78; g.lineWidth = lvl >= 3 ? 1.8 : 1.2;
       g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); g.globalAlpha = 1;
-      if (lvl === 4) { g.fillStyle = k / 16 % 12 === 0 && k ? '#9c2a1a' : '#2b1907'; g.font = '600 16px Fraunces, Georgia, serif'; g.textAlign = 'center'; g.fillText(String(k / 16), x, 50); }
+      if (lvl === 4) { g.fillStyle = k / 16 % 12 === 0 && k ? '#b3261e' : '#1f2a23'; g.font = '700 16px Archivo, sans-serif'; g.textAlign = 'center'; g.fillText(String(k / 16), x, 50); }
     }
   };
   const show = () => {
@@ -1057,7 +1215,7 @@ function matchLook(list, widths, art, done) {
     for (let k = Math.ceil((v - c / PPI) * 32); k <= (v + c / PPI) * 32; k++) {
       if (k < 1) continue;
       const x = c + (k / 32 - v) * PPI, lvl = k % 32 === 0 ? 3 : k % 8 === 0 ? 2 : k % 4 === 0 ? 1 : 0;
-      g.strokeStyle = '#2b1907'; g.globalAlpha = Math.max(.15, 1 - Math.abs(x - c) / c) * (lvl ? 1 : .7); g.lineWidth = lvl >= 2 ? 2 : 1.3;
+      g.strokeStyle = '#1f2a23'; g.globalAlpha = Math.max(.15, 1 - Math.abs(x - c) / c) * (lvl ? 1 : .7); g.lineWidth = lvl >= 2 ? 2 : 1.3;
       g.beginPath(); g.moveTo(x, 0); g.lineTo(x, [10, 16, 24, 34][lvl]); g.stroke();
     }
     g.globalAlpha = 1;
@@ -1086,52 +1244,41 @@ function matchLook(list, widths, art, done) {
 }
 
 /* ---------- Wood checklist ---------- */
+// Tap woods in the order the strips go. Below that, the strips themselves: drag to reorder, tap the size to set it.
 // widths (optional): one thickness per strip, kept in step as strips are added, removed and reordered
-function woodPicker(el, list, onChange, widths, art, onCols) {
+function woodPicker(el, list, onChange, widths, art) {
   const W = Array.isArray(widths);
   if (W) { while (widths.length < list.length) widths.push(widths[widths.length - 1] || .75); widths.length = list.length; }
-  const add = id => { list.push(id); if (W) widths.push(widths[widths.length - 1] || .75); onChange(list); draw(); };
+  const changed = () => { onChange(list); draw(); };
+  const add = id => { if (list.length >= 40) return toast('40 strips is the most a piece can have'); list.push(id); if (W) widths.push(widths[widths.length - 1] || .75); changed(); };
   function draw() {
     const counts = {}; list.forEach(id => counts[id] = (counts[id] || 0) + 1);
     const shown = [...shopWoods()];
     list.forEach(id => { if (!shown.some(w => w.id === id)) { const w = woodById(id); if (w) shown.push(w); } });
+    const total = W ? widths.reduce((a, x) => a + x, 0) : 0;
     el.innerHTML = `
       <div class="woodlist">${shown.map(w => `
-        <button class="wood ${counts[w.id] ? 'picked' : ''}" data-w="${w.id}">
-          <span class="sw" style="background:linear-gradient(90deg,${w.color},${w.color2 || w.color})"></span>
-          <span class="wn">${esc(w.name)}</span>${counts[w.id] ? `<span class="cnt">${counts[w.id] > 1 ? '×' + counts[w.id] : '✓'}</span>` : ''}
-        </button>`).join('')}
-        <button class="wood other" id="otherWood"><span class="sw plus">+</span><span class="wn">Other wood</span></button></div>
-      <div class="sec" style="margin-top:18px;font-size:16px">Strip order <span class="small muted">${list.length ? 'drag to reorder · tap to remove' : ''}</span></div>
-      <div class="order">${list.length ? list.map((id, i) => { const w = woodById(id) || { name: '?', color: '#555' }; return `<div class="o" data-i="${i}"><b style="background:${w.color}">${i + 1}</b>${esc(w.name)}</div>`; }).join('') : '<div class="empty">Tap woods in the order the strips go. Tap one again if it repeats.</div>'}</div>
-      ${W && list.length ? `<div class="sec" style="margin-top:18px;font-size:16px">Strip thickness <span class="small muted">blank ${fracHTML(widths.reduce((a, x) => a + x, 0))} wide</span></div>
-      <div class="card flush">${list.map((id, i) => { const w = woodById(id) || { name: '?', color: '#555' }; return `<div class="strow"><div class="who" style="padding-left:8px">${swatch(w, 26, 8)}<div class="grow"><div class="t">${i + 1}. ${esc(w.name)}</div></div></div><button class="meas inline" data-sww="${i}"><span class="mv">${fracHTML(widths[i])}</span></button></div>`; }).join('')}</div>
-      <div class="tools-row">${art ? '<button class="btn small primary" id="swLook">Match it to the real one</button>' : ''}<button class="btn small" id="swSame">Make them all the same</button></div>` : ''}`;
-    $$('.wood[data-w]', el).forEach(b => b.onclick = () => { if (list.length >= 40) return toast('40 strips max'); add(b.dataset.w); });
+        <button class="wood ${counts[w.id] ? 'picked' : ''}" data-w="${w.id}">${swatch(w, 22, 6)}<span class="wn">${esc(w.name)}</span>${counts[w.id] ? `<span class="cnt">${counts[w.id] > 1 ? '×' + counts[w.id] : '✓'}</span>` : ''}</button>`).join('')}
+        <button class="wood other" id="otherWood"><span class="sw plus">+</span><span class="wn">Other</span></button></div>
+      <div class="tray-h" style="margin:18px 0 8px;font-size:15px">Strips, in order <span class="small muted">${list.length ? `${list.length}${W ? `, ${fracHTML(total)} wide` : ''}` : ''}</span></div>
+      ${list.length ? `<div class="card flush" id="stl">${list.map((id, i) => { const w = woodById(id) || { name: '?', color: '#777' }; return `<div class="strow" data-i="${i}"><span class="hdl" aria-label="Drag to reorder">${ICON.grip}</span><span class="no">${i + 1}</span>
+        <button class="who" data-cw="${i}">${swatch(w, 28, 8)}<div class="grow"><div class="t">${esc(w.name)}</div></div></button>
+        ${W ? `<button class="meas inline" data-sww="${i}"><span class="mv">${fracHTML(widths[i])}</span></button>` : ''}
+        <button class="icon" data-rm="${i}" aria-label="Remove strip ${i + 1}">${ICON.close}</button></div>`; }).join('')}</div>`
+      : '<p class="empty" style="margin:0">Tap woods above in the order the strips go. Tap one again if it repeats.</p>'}
+      ${W && list.length ? `<div class="tools-row">${art ? '<button class="btn small tonal" id="swLook">Match it to the real one</button>' : ''}<button class="btn small" id="swSame">All the same thickness</button></div>` : ''}`;
+    $$('.wood[data-w]', el).forEach(b => b.onclick = () => add(b.dataset.w));
     $('#otherWood', el).onclick = () => woodSearchSheet(add);
-    $$('.o', el).forEach(dragChip);
-    $$('[data-sww]', el).forEach(b => b.onclick = () => { const i = +b.dataset.sww; measure({ title: `Strip ${i + 1}: ${woodName(list[i])}`, value: widths[i], min: 1 / 32, max: 6, quick: [.125, .25, .375, .5, .625, .75, 1], onSet: v => { widths[i] = v; onChange(list); draw(); } }); });
-    $('#swLook', el)?.addEventListener('click', () => matchLook(list, widths, art, () => { onChange(list); draw(); }));
-    $('#swSame', el)?.addEventListener('click', () => measure({ title: 'Every strip', value: widths[0], min: 1 / 32, max: 6, quick: [.25, .375, .5, .625, .75, 1], onSet: v => { widths.fill(v); onChange(list); draw(); } }));
-  }
-  function dragChip(o) {
-    let sx = null, sy, moved = false; const from = +o.dataset.i;
-    o.onpointerdown = e => { sx = e.clientX; sy = e.clientY; moved = false; o.setPointerCapture(e.pointerId); };
-    o.onpointermove = e => {
-      if (sx == null) return;
-      if (!moved && Math.hypot(e.clientX - sx, e.clientY - sy) > 8) { moved = true; o.classList.add('drag'); }
-      if (!moved) return;
-      $$('.o', el).forEach(x => x.classList.remove('over'));
-      const t = document.elementFromPoint(e.clientX, e.clientY)?.closest('.o'); if (t && t !== o) t.classList.add('over');
-    };
-    o.onpointerup = e => {
-      if (sx == null) return; sx = null;
-      if (!moved) { list.splice(from, 1); if (W) widths.splice(from, 1); onChange(list); draw(); return; }
-      const t = document.elementFromPoint(e.clientX, e.clientY)?.closest('.o');
-      if (t && t !== o) { const to = +t.dataset.i, [x] = list.splice(from, 1); list.splice(to, 0, x); if (W) { const [y] = widths.splice(from, 1); widths.splice(to, 0, y); } onChange(list); }
-      draw();
-    };
-    o.onpointercancel = () => { sx = null; draw(); };
+    const box = $('#stl', el);
+    if (box) dragList(box, (from, to) => { const [x] = list.splice(from, 1); list.splice(to, 0, x); if (W) { const [y] = widths.splice(from, 1); widths.splice(to, 0, y); } changed(); });
+    $$('[data-cw]', el).forEach(b => b.onclick = () => { const i = +b.dataset.cw; pickOneWood(list[i], id => { list[i] = id; changed(); }, `Strip ${i + 1}`); });
+    $$('[data-rm]', el).forEach(b => b.onclick = () => {
+      const i = +b.dataset.rm, [gone] = list.splice(i, 1), gw = W ? widths.splice(i, 1)[0] : null; changed();
+      toast(`Took out strip ${i + 1}, ${woodName(gone).toLowerCase()}`, { action: 'Undo', onAction: () => { list.splice(i, 0, gone); if (W) widths.splice(i, 0, gw); changed(); } });
+    });
+    $$('[data-sww]', el).forEach(b => b.onclick = () => { const i = +b.dataset.sww; measure({ title: `Strip ${i + 1}: ${woodName(list[i])}`, value: widths[i], min: 1 / 32, max: 6, quick: [.125, .25, .375, .5, .625, .75, 1], onSet: v => { widths[i] = v; changed(); } }); });
+    $('#swLook', el)?.addEventListener('click', () => matchLook(list, widths, art, changed));
+    $('#swSame', el)?.addEventListener('click', () => measure({ title: 'Every strip', value: widths[0], min: 1 / 32, max: 6, quick: [.25, .375, .5, .625, .75, 1], onSet: v => { widths.fill(v); changed(); } }));
   }
   draw();
 }
@@ -1185,115 +1332,134 @@ function newWoodFlow(name, onDone) {
 
 /* ---------- Views ---------- */
 const VIEWS = {};
-let pieceFilter = 'all', pieceQuery = '';
+let pieceFilter = 'all', pieceQuery = '', pieceSearch = false;
 function pieceText(p) {
   const bd = p.board ? [boardTitle(p.board)] : [];
   return norm([`no ${p.no} ${pad(p.no)}`, typeName(p), ...p.woods.map(woodName), p.soldTo, p.notes, p.special, p.finish, statusWord(p.status), ...bd].join(' '));
 }
-const statusWord = s => s === 'sold' ? 'sold' : s === 'available' ? 'finished for sale' : 'building';
+const statusWord = s => s === 'sold' ? 'sold' : s === 'available' ? 'finished for sale ready' : 'building';
+const sentence = list => list.length ? cap(list.join(', ').toLowerCase()) : '';
+function woodsShort(p, max = 3) { const ws = uniqWoods(p.woods).map(w => w.name); return ws.length > max ? `${sentence(ws.slice(0, max))} + ${ws.length - max} more` : sentence(ws); }
 function pieceCard(p) {
-  const price = p.price ? `$${esc(String(p.price).replace(/^\$/, ''))}` : '';
+  const price = num$(p.price), art = pieceArt(p), ph = p.photos?.[0], t = typeById(p.type), tall = t.board || t.bowl;
   return `<button class="piece" data-id="${p.id}">
-    <div class="thumb">${p.photos?.length ? `<img data-photo="${p.photos[0]}" alt="">` : (pieceArt(p) || '')}</div>
-    <div class="meta"><div class="row" style="gap:8px"><div class="no">No. ${pad(p.no)}</div>${price ? `<div class="no" style="flex:none;color:var(--text)">${price}</div>` : ''}</div>
-      <div class="nm">${esc(typeName(p))}</div>
-      <div class="lc">${squiggle(stageOf(p), { w: 64, sw: 3.5, amp: 2.2, wl: 16 })}${statusChip(p.status)}</div>
-      ${p.woods.length ? `<div class="woodline">${colsOf(p).map(w => `<i style="background:${w.color};flex:${w.w || 1}"></i>`).join('')}</div>` : ''}</div></button>`;
+    <div class="pc-top"><span class="serial">No. ${pad(p.no)}</span>${statusTag(p.status)}</div>
+    <div class="pc-sub"><span>${esc(typeName(p))}</span>${price != null ? `<b>${fmt$(price)}</b>` : ''}</div>
+    ${art || ph ? `<div class="pc-art ${ph && art ? 'has-ph' : ''}" ${tall ? 'style="height:116px"' : ''}>${art || ''}${ph ? `<span class="ph" ${art ? '' : 'style="position:static;width:100%;height:100%;aspect-ratio:auto"'}><img data-photo="${ph}" alt=""></span>` : ''}</div>` : ''}
+    ${p.woods.length ? `<div class="pc-woods">${esc(woodsShort(p))}</div>` : ''}</button>`;
 }
 
 VIEWS.pieces = () => {
-  setTop('Pieces');
   const v = $('#view');
   if (!S.pieces.length) {
+    setTop('Pieces');
     const demo = BD.draw(newBoard(), woodById, 11);
-    v.innerHTML = `<div class="empty-state">${logoSrc() ? `<img class="shoplogo" src="${esc(logoSrc())}" alt="" style="width:230px;margin:0 auto 26px">` : ''}<div style="width:180px;margin:0 auto">${demo}</div><h3>Your first piece</h3><p>Log what you make. Bench numbers it, writes its story, builds the listing and makes a QR tag for the buyer.</p><button class="btn primary" id="first">${ICON.plus.replace('<svg', '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"')} Log a piece</button></div>`;
+    v.innerHTML = `<div class="empty-state">${logoSrc() ? `<img class="shoplogo" src="${esc(logoSrc())}" alt="" style="width:220px;margin:0 0 30px">` : ''}<div class="preview" style="min-height:0;padding:22px">${demo}</div><h3>Your first piece</h3><p>Log what you make. Bench numbers it, writes its story, builds the listing and makes a QR tag for the buyer.</p><button class="btn primary" id="first">${ICON.plus} Log a piece</button></div>`;
     $('#first').onclick = () => go('editPiece', {});
     return;
   }
+  setTop('Pieces', `<button class="icon" id="pSearch" aria-label="Search">${ICON.search}</button>`);
+  const n = s => S.pieces.filter(p => p.status === s).length;
   const names = [...new Set(S.pieces.map(typeName))];
-  const filters = [['all', 'All'], ['building', 'Building'], ['available', 'Finished'], ['sold', 'Sold'], ...names.map(n => ['t:' + n, n])];
+  const filters = [['all', 'Active', S.pieces.length - n('sold')], ['building', 'Building', n('building')], ['available', 'Finished', n('available')], ['sold', 'Sold', n('sold')], ...(names.length > 1 ? names.map(nm => ['t:' + nm, nm, S.pieces.filter(p => typeName(p) === nm && p.status !== 'sold').length]) : [])];
   if (!filters.some(f => f[0] === pieceFilter)) pieceFilter = 'all';
+  const searching = pieceSearch || pieceQuery;
   v.innerHTML = `
-    <div class="search">${ICON.search}<input id="pq" type="search" placeholder="Search number, wood, buyer…" value="${esc(pieceQuery)}" autocomplete="off"></div>
-    <div class="filters">${filters.map(([k, l]) => `<button data-f="${esc(k)}" class="${pieceFilter === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>
+    ${searching ? `<div class="search">${ICON.search}<input id="pq" type="search" placeholder="Number, wood, buyer…" value="${esc(pieceQuery)}" autocomplete="off"><button class="icon" id="pqx" aria-label="Close search">${ICON.close}</button></div>` : ''}
+    <div class="filters">${filters.map(([k, l, c]) => `<button data-f="${esc(k)}" class="${pieceFilter === k ? 'on' : ''}">${esc(l)} <b>${c}</b></button>`).join('')}</div>
     <div id="plist"></div><div style="height:70px"></div>`;
   const draw = () => {
     let list = [...S.pieces].sort((a, b) => b.no - a.no);
-    if (pieceFilter.startsWith('t:')) list = list.filter(p => typeName(p) === pieceFilter.slice(2));
-    else if (pieceFilter !== 'all') list = list.filter(p => p.status === pieceFilter);
     const q = norm(pieceQuery);
-    // Sold pieces live in the Gallery (and the Sold filter) so this list stays the work in front of you; searching still finds them
+    if (pieceFilter.startsWith('t:')) list = list.filter(p => typeName(p) === pieceFilter.slice(2) && (q || p.status !== 'sold'));
+    else if (pieceFilter !== 'all') list = list.filter(p => p.status === pieceFilter);
+    // Sold pieces live in the Gallery (and under Sold), so this list stays the work in front of you. Searching still finds them.
     const soldHidden = pieceFilter === 'all' && !q ? list.filter(p => p.status === 'sold').length : 0;
-    if (soldHidden) list = list.filter(p => p.status !== 'sold'); if (q) list = list.filter(p => q.split(' ').every(w => pieceText(p).includes(w)));
-    $('#plist').innerHTML = list.map(pieceCard).join('') || `<p class="muted center" style="margin-top:30px">${q ? 'Nothing matches that.' : 'Nothing here yet.'}</p>`;
-    if (soldHidden) $('#plist').insertAdjacentHTML('beforeend', `<p class="note center" style="margin:14px 0 0">${soldHidden} sold ${soldHidden === 1 ? 'piece is' : 'pieces are'} in the Gallery. <button class="btn small" id="showSold">Show sold</button></p>`);
-    $('#showSold')?.addEventListener('click', () => { pieceFilter = 'sold'; $$('[data-f]', v).forEach(x => x.classList.toggle('on', x.dataset.f === 'sold')); draw(); });
+    if (soldHidden) list = list.filter(p => p.status !== 'sold');
+    if (q) list = list.filter(p => q.split(' ').every(w => pieceText(p).includes(w)));
+    $('#plist').innerHTML = list.map(pieceCard).join('') || `<p class="muted" style="margin:30px 4px">${q ? 'Nothing matches that.' : pieceFilter === 'available' ? 'Nothing finished right now.' : pieceFilter === 'building' ? 'Nothing on the bench right now.' : 'Nothing here yet.'}</p>`;
+    if (soldHidden) $('#plist').insertAdjacentHTML('beforeend', `<div class="list-foot"><span>${soldHidden} sold ${soldHidden === 1 ? 'piece is' : 'pieces are'} in the Gallery</span><button class="btn small" id="showSold">Show sold</button></div>`);
+    $('#showSold')?.addEventListener('click', () => { pieceFilter = 'sold'; render(); });
     $$('.piece', v).forEach(b => b.onclick = () => go('piece', { id: b.dataset.id }));
     fillPhotos($('#plist'));
   };
   longPress($('#plist'), '.piece', el => pieceMenu(S.pieces.find(x => x.id === el.dataset.id)));
-  $('#pq').oninput = () => { pieceQuery = $('#pq').value; draw(); };
+  $('#pSearch').onclick = () => { pieceSearch = !searching; if (!pieceSearch) pieceQuery = ''; render(); if (pieceSearch) setTimeout(() => $('#pq')?.focus(), 30); };
+  $('#pq')?.addEventListener('input', () => { pieceQuery = $('#pq').value; draw(); });
+  $('#pqx')?.addEventListener('click', () => { pieceSearch = false; pieceQuery = ''; render(); });
   $$('[data-f]', v).forEach(b => b.onclick = () => { pieceFilter = b.dataset.f; $$('[data-f]', v).forEach(x => x.classList.toggle('on', x === b)); draw(); });
   draw();
   fab(() => go('editPiece', {}), 'New piece', true);
 };
 
+const shortDate = d => d ? new Date(d + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+// The wood strips as they sit in the blank, at their real thickness when you've set it
+function lamHTML(p) {
+  const t = typeById(p.type), cols = colsOf(p), W = stripW(p), lam = !t.board && !t.bowl && p.woods.length > 1;
+  const legend = lam && W ? p.woods.map((id, i) => ({ w: woodById(id), x: W[i] })) : uniqWoods(p.woods).map(w => ({ w }));
+  return `<div class="lam">${lam ? `<div class="band">${cols.map(w => `<i style="background:linear-gradient(90deg,${w.color},${w.color2 || w.color});flex:${w.w || 1}"></i>`).join('')}</div>` : ''}
+    <div class="legend">${legend.filter(x => x.w).map(x => `<span><b style="background:${x.w.color}"></b>${esc(x.w.name)}${x.x ? ` <span class="muted">${fracHTML(x.x)}</span>` : ''}</span>`).join('')}</div></div>`;
+}
+function storyCardHTML(p) {
+  const { main, more, tail } = storyBlocks(storyOf(p));
+  const para = b => `<p class="${b.kind}">${esc(b.text).replace(/\n/g, '<br>')}</p>`;
+  const care = main.filter(b => b.kind === 'care'), body = main.filter(b => b.kind !== 'care');
+  return `<div class="story-card">${body.map(para).join('')}${more.length ? `<details><summary>About the ${uniqWoods(p.woods).length > 1 ? 'woods' : 'wood'}</summary>${more.map(para).join('')}</details>` : ''}${care.map(para).join('')}${tail.map(para).join('')}</div>`;
+}
+
 VIEWS.piece = ({ id }) => {
   const p = S.pieces.find(x => x.id === id); if (!p) return back();
   const type = typeById(p.type);
   p.buildPhotos ??= [];
-  setTop(`No. ${pad(p.no)}`, `<button class="icon" id="dup" aria-label="Make another">${ICON.copy}</button><button class="icon" id="edit" aria-label="Edit">${ICON.edit}</button>`);
+  setTop(`No. ${pad(p.no)}`, `<button class="icon" id="edit" aria-label="Edit">${ICON.edit}</button><button class="icon" id="more" aria-label="More">${ICON.more}</button>`);
   const v = $('#view');
-  const art = pieceArt(p, viewMode), wc = woodCost(p), pr = num$(p.price);
-  const sub = [p.date ? monthYear(p.date) : '', type.board && p.board ? boardTitle(p.board) : '', type.bowl && p.bowl ? `${B.SHAPES[p.bowl.shape]?.name || ''}` : ''].filter(Boolean).join(' · ');
-  const tools = (type.board || type.bowl) && art ? `<div class="pvbar"><span class="pvtag">${type.board ? dimsHTML(p.board) : `${fracHTML(p.bowl.D)} × ${fracHTML(p.bowl.H)}`}</span><span class="tools"><button class="mini" id="b3d">${ICON.cube}3D</button>${type.board || (p.bowl && p.bowl.kind === 'seg') ? `<button class="mini" id="${type.board ? 'bdcut' : 'bcut'}">${ICON.list}Cut list</button>` : ''}</span></div>` : '';
+  const art = pieceArt(p, viewMode), wc = woodCost(p), pr = num$(p.price), photos = p.photos || [];
+  const tools = art ? `<div class="pvbar"><span class="pvtag">${type.board ? dimsHTML(p.board) : type.bowl ? `${fracHTML(p.bowl.D)} × ${fracHTML(p.bowl.H)}` : ''}</span><span class="tools">${type.slots.length ? `<button class="mini" id="pvMode">${viewMode === 'templates' ? 'Finished' : 'Templates'}</button>` : ''}<button class="mini" id="b3d">${ICON.cube}3D</button>${type.board || (p.bowl && p.bowl.kind === 'seg') ? `<button class="mini" id="${type.board ? 'bdcut' : 'bcut'}">${ICON.list}Cut list</button>` : ''}</span></div>` : '';
+  const meta = [p.date ? monthYear(p.date) : '', p.finish && p.finish !== 'Unfinished' ? p.finish : '', p.size || ''].filter(Boolean);
+  const dates = { building: shortDate(p.date), available: shortDate(p.doneDate), sold: p.soldTo ? esc(p.soldTo) : shortDate(p.soldDate) };
+  const at = ['building', 'available', 'sold'].indexOf(p.status);
   v.innerHTML = `
-    ${p.photos?.length ? `<div class="hero"><img data-photo="${p.photos[0]}" alt=""></div>` : ''}
-    ${p.photos?.length > 1 ? `<div class="photos" style="margin-bottom:14px">${p.photos.slice(1).map(ph => `<div class="ph"><img data-photo="${ph}" alt=""></div>`).join('')}</div>` : ''}
-    ${art ? `<div class="preview ${tools ? 'bar' : ''}" id="pv" style="margin-bottom:10px">${art}${tools}</div>${type.slots.length ? `<div style="margin-bottom:16px">${modeSeg(viewMode)}</div>` : ''}` : ''}
-    <div class="dtitle">${esc(typeName(p))}</div>
-    <div class="muted small" style="margin-top:4px">${esc(sub)}</div>
-    <div style="margin:16px 2px 8px" id="lcq"></div>
-    <div class="seg" id="stage">${[['building', 'Building'], ['available', 'Finished'], ['sold', 'Sold']].map(([k, l]) => `<button data-stage="${k}" ${k === 'sold' ? 'id="markSold"' : ''} class="${p.status === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-    <div class="actions"><button class="btn primary" id="list">${ICON.share} Listing</button><button class="btn" id="qr">${ICON.qr} QR tag</button></div>
-    ${pr != null || wc ? `<div class="money" style="margin-bottom:14px"><div><b>${pr != null ? fmt$(pr) : '—'}</b><span>Price</span></div><div><b>${wc ? fmt$(wc.v) : '—'}</b><span>Wood${wc && wc.est ? ' (est.)' : ''}</span></div><div><b>${pr != null && wc ? fmt$(pr - wc.v) : '—'}</b><span>Profit</span></div></div>` : ''}
+    <div class="shots">${photos.map(ph => `<div><img data-photo="${ph}" data-big="${ph}" alt=""></div>`).join('')}${art ? `<div class="preview bar" id="pv"><div class="pvart">${art}</div>${tools}</div>` : ''}</div>
+    <div class="pd-head"><span class="serial">No. ${pad(p.no)}</span></div>
+    <div class="pd-type">${esc(typeName(p))}${type.board && p.board ? ` <span class="muted" style="font-weight:450">${esc(boardTitle(p.board))}</span>` : ''}</div>
+    <div class="pd-meta">${esc(meta.join(', '))}</div>
+    <div class="stepper3" id="stage">${[['building', 'Building'], ['available', 'Finished'], ['sold', 'Sold']].map(([k, l], i) => `<button data-stage="${k}" class="${i === at ? 'on' : i < at ? 'done' : ''}">${l}<small>${i <= at ? dates[k] || '' : ''}</small></button>`).join('')}</div>
+    <div class="acts">
+      <button id="aList">${ICON.text}Listing</button><button id="aQr">${ICON.qr}QR tag</button><button id="aCard">${ICON.card}Print card</button><button id="aPage">${ICON.page}Story page</button></div>
+    ${pr != null || wc ? `<div class="money"><div><b>${pr != null ? fmt$(pr) : '—'}</b><span>Price</span></div><div><b>${wc ? fmt$(wc.v) : '—'}</b><span>Wood${wc && wc.est ? ', est.' : ''}</span></div><div><b>${pr != null && wc ? fmt$(pr - wc.v) : '—'}</b><span>Profit</span></div></div>` : ''}
+    ${p.woods.length ? `<div class="sec">Woods <span class="small muted">${type.board || type.bowl ? '' : p.woods.length > 1 ? `${p.woods.length} strips${stripW(p) ? `, ${fracHTML(stripW(p).reduce((a, x) => a + x, 0))} wide` : ''}` : ''}</span></div>${lamHTML(p)}` : ''}
+    <div class="sec">Details</div>
     <div class="card"><dl class="kv">
-      ${type.slots.map(s => { const t = tplById((p.templates || {})[s.name]); return t ? `<dt>${esc(s.name)}</dt><dd>${esc(t.code)} · ${esc(t.name)}</dd>` : ''; }).join('')}
-      ${type.bowl && p.bowl ? `<dt>Bowl</dt><dd>${esc(p.bowl.kind === 'seg' ? `Segmented · ${p.bowl.rings.length} rings + base · ${B.pieceCount(p.bowl)} pieces` : p.bowl.kind === 'epoxy' ? 'Solid with epoxy' : 'Solid')}</dd><dt>Size</dt><dd>${fracHTML(p.bowl.D)} × ${fracHTML(p.bowl.H)} tall</dd>` : ''}
-      ${type.board && p.board ? `<dt>Board</dt><dd>${esc(boardTitle(p.board))}${p.board.style !== 'edge' ? ' · ' + BD.blocks(p.board) + ' pieces' : ''}</dd><dt>Size</dt><dd>${fracHTML(BD.lengthOf(p.board))} × ${fracHTML(BD.widthOf(p.board))} × ${fracHTML(p.board.T)}</dd>${featList(p.board).length ? `<dt>Touches</dt><dd>${esc(cap(joinList(featList(p.board))))}</dd>` : ''}` : ''}
-      ${p.woods.length ? `<dt>Woods</dt><dd>${stripW(p) ? p.woods.map((i, k) => `${esc(woodById(i)?.name || '?')} ${fracHTML(p.widths[k])}`).join(' → ') : esc(p.woods.map(i => woodById(i)?.name || '?').join(type.board || type.bowl ? ', ' : ' → '))}</dd>` : ''}
-      ${p.finish ? `<dt>Finish</dt><dd>${esc(p.finish)}</dd>` : ''}
+      ${type.slots.map(s => { const t = tplById((p.templates || {})[s.name]); return t ? `<dt>${esc(s.name)}</dt><dd>${esc(t.code)}, ${esc(t.name)}</dd>` : ''; }).join('')}
+      ${(() => { const sv = type.slots.map(s => sideViewOf(tplById((p.templates || {})[s.name]))).find(Boolean); return sv ? `<dt>Side view</dt><dd>${esc(sv.code)}, ${esc(sv.name)}</dd>` : ''; })()}
+      ${type.bowl && p.bowl ? `<dt>Bowl</dt><dd>${esc(p.bowl.kind === 'seg' ? `Segmented, ${p.bowl.rings.length} rings and a base, ${B.pieceCount(p.bowl)} pieces` : p.bowl.kind === 'epoxy' ? 'Solid with epoxy' : 'Solid')}</dd><dt>Size</dt><dd>${fracHTML(p.bowl.D)} × ${fracHTML(p.bowl.H)} tall</dd>` : ''}
+      ${type.board && p.board ? `<dt>Board</dt><dd>${esc(boardTitle(p.board))}${p.board.style !== 'edge' ? ', ' + BD.blocks(p.board) + ' pieces' : ''}</dd><dt>Size</dt><dd>${fracHTML(BD.lengthOf(p.board))} × ${fracHTML(BD.widthOf(p.board))} × ${fracHTML(p.board.T)}</dd>${featList(p.board).length ? `<dt>Touches</dt><dd>${esc(cap(joinList(featList(p.board))))}</dd>` : ''}` : ''}
+      <dt>Finish</dt><dd>${esc(p.finish || '—')}</dd>
       ${p.size ? `<dt>Size</dt><dd>${esc(p.size)}</dd>` : ''}
-      ${p.soldTo ? `<dt>Sold to</dt><dd>${esc(p.soldTo)}${p.soldDate ? `, ${esc(new Date(p.soldDate + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }))}` : ''}</dd>` : ''}
+      ${p.status === 'sold' ? `<dt>Sold</dt><dd>${esc([p.soldTo, p.soldDate ? new Date(p.soldDate + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''].filter(Boolean).join(', ') || 'Yes')}</dd>` : ''}
       ${p.notes ? `<dt>Notes</dt><dd>${esc(p.notes)}</dd>` : ''}
     </dl></div>
-    <div class="sec">Build photos <button class="btn small tonal" id="addBuild">+ Add</button></div>
+    <div class="sec">Progress photos <button class="btn small tonal" id="addBuild">${ICON.plus}Add</button></div>
     ${p.buildPhotos.length ? `<div class="timeline">${[...p.buildPhotos].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(b => `
-      <button class="tl" data-b="${b.id}"><img data-photo="${b.id}" alt=""><div class="tlm"><div class="small muted">${esc(b.date ? new Date(b.date + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '')}</div><div>${esc(b.caption || 'Add a caption')}</div></div></button>`).join('')}</div>`
-      : '<p class="note" style="margin-top:0">Glue-up, shaping, first coat of finish. Snap progress pics as you go; they stay with this piece.</p>'}
-    <div class="sec">Story <button class="btn small tonal" id="editStory">Edit</button></div>
-    <div class="card"><div class="story">${esc(storyOf(p))}</div></div>
-    ${p.storyEdited ? `<p class="note">You edited this story. <button class="btn small" id="regen" style="margin-left:6px">Rewrite from details</button></p>` : ''}
+      <button class="tl" data-b="${b.id}"><img data-photo="${b.id}" alt=""><div class="tlm"><div class="small muted">${esc(shortDate(b.date))}</div><div>${esc(b.caption || 'Add a caption')}</div>${b.hide ? '<div class="hide">Not on the story page</div>' : ''}</div></button>`).join('')}</div>`
+      : '<p class="note" style="margin-top:0">Glue-up, shaping, first coat of finish. Snap them as you go; they show on the story page under the story.</p>'}
+    <div class="sec">Story <button class="btn small tonal" id="editStory">${ICON.edit}Edit</button></div>
+    ${storyCardHTML(p)}
+    ${p.storyEdited ? `<p class="note">You edited this story. <button class="btn small ghost" id="regen">Write it again from the details</button></p>` : p.storyLocked ? `<p class="note">Kept as it was when it sold, so the buyer's page stays the same. <button class="btn small ghost" id="regen">Write it again</button></p>` : ''}
     <div style="height:24px"></div>`;
-  fillPhotos(v); squigInto($('#lcq'), stageOf(p));
-  if (art && type.slots.length) bindMode(v, () => { $('#pv').innerHTML = pieceArt(p, viewMode); }, 'mode', p);
+  fillPhotos(v);
+  $$('.shots img[data-big]', v).forEach(im => im.onclick = () => photoSheet(im.dataset.big));
+  $('#pvMode', v)?.addEventListener('click', () => { viewMode = viewMode === 'templates' ? 'finished' : 'templates'; render(); });
   $('#edit').onclick = () => go('editPiece', { id });
-  $('#dup').onclick = () => duplicatePiece(p);
+  $('#more').onclick = () => pieceMenu(p, true);
   $('#b3d', v)?.addEventListener('click', () => open3D(p));
   $('#bcut', v)?.addEventListener('click', () => cutListSheet(p));
   $('#bdcut', v)?.addEventListener('click', () => boardCutSheet(p));
-  $$('[data-stage]', v).forEach(b => b.onclick = () => {
-    const s = b.dataset.stage; if (s === p.status) return;
-    if (s === 'sold') return markSoldSheet(p);
-    const was = p.status; p.status = s; save(); render();
-    if (s === 'available' && was === 'building') askPrint(p);
-  });
-  $('#list').onclick = () => {
-    openSheet(`<h2>Listing</h2><textarea id="lt" style="min-height:260px">${esc(genListing(p))}</textarea>
-      <div class="row" style="margin-top:12px"><button class="btn" id="lc">Copy</button><button class="btn primary" id="ls">Share</button></div>`);
-    $('#lc').onclick = () => copyText($('#lt').value); $('#ls').onclick = () => shareText($('#lt').value, pieceTitle(p));
-  };
-  $('#qr').onclick = () => qrSheet(p);
+  $$('[data-stage]', v).forEach(b => b.onclick = () => setStatus(p, b.dataset.stage));
+  $('#aList').onclick = () => go('listing', { id });
+  $('#aQr').onclick = () => qrSheet(p);
+  $('#aCard').onclick = () => S.settings.pageUrl ? printCardsSheet(p) : pageSetupSheet(() => printCardsSheet(p));
+  $('#aPage').onclick = () => openStoryPage(p);
   $('#addBuild').onclick = async () => {
     const ids = []; await addPhotos(ids); if (!ids.length) return;
     ids.forEach(i => p.buildPhotos.push({ id: i, date: today(), caption: '' })); save(); autoPublish(15000); render();
@@ -1301,18 +1467,84 @@ VIEWS.piece = ({ id }) => {
   };
   $$('[data-b]', v).forEach(b => b.onclick = () => buildPhotoSheet(p, p.buildPhotos.find(x => x.id === b.dataset.b)));
   $('#editStory').onclick = () => storySheet(p);
-  $('#regen', v)?.addEventListener('click', () => { p.storyEdited = false; p.story = ''; save(); render(); });
+  $('#regen', v)?.addEventListener('click', () => { p.storyEdited = false; p.storyLocked = false; p.story = ''; save(); autoPublish(8000); render(); });
 };
+// Marketplace helper: everything Facebook asks for, in the order it asks, each with its own Copy button
+VIEWS.listing = ({ id }, frame) => {
+  const p = S.pieces.find(x => x.id === id); if (!p) return back();
+  setTop('Listing', `<button class="icon" id="lsShare" aria-label="Share all of it">${ICON.share}</button>`);
+  const titles = listingTitles(p);
+  frame.ti ??= 0; frame.style ||= 'full';
+  frame.title ??= titles[0]; frame.body ??= genListing(p, frame.style);
+  const v = $('#view'), price = num$(p.price), photos = p.photos || [];
+  const copyBtn = (k) => `<button class="btn small tonal mk-copy" data-copy="${k}">${ICON.copy}Copy</button>`;
+  v.innerHTML = `
+    <p class="note" style="margin:0 2px 12px">Open Marketplace, then copy each part across. Facebook asks for them in this order.</p>
+    <div class="mk-field"><div class="lab">Photos <button class="btn small tonal mk-copy" id="mkPh" ${photos.length ? '' : 'disabled'}>${ICON.share}Share ${photos.length > 1 ? `all ${photos.length}` : ''}</button></div>
+      ${photos.length ? `<div class="photos">${photos.map(ph => `<div class="ph"><img data-photo="${ph}" alt=""></div>`).join('')}</div>` : `<div class="val muted" style="font-size:14px">No finished photos yet. Add them when you edit the piece.</div>`}</div>
+    <div class="mk-field"><div class="lab"><span>Title<span style="font-weight:450;color:var(--ink-3);margin-left:8px">Tap one to pick it</span></span> ${copyBtn('title')}</div>
+      <div class="mk-titles">${titles.map((t, i) => `<button data-ti="${i}" class="${frame.title === t ? 'on' : ''}"><span class="check ${frame.title === t ? 'on' : ''}">${ICON.check}</span><span>${esc(t)}</span></button>`).join('')}</div></div>
+    <div class="mk-field"><div class="lab">Price ${price != null ? copyBtn('price') : ''}</div>${price != null ? `<div class="val big">${fmt$(price)}</div>` : `<div class="row"><input id="mkPrice" inputmode="decimal" placeholder="$" style="flex:1"><button class="btn small" id="mkPriceOk" style="flex:none">Set price</button></div>`}</div>
+    <div class="mk-field"><div class="lab">Condition</div><div class="val">New</div></div>
+    <div class="mk-field"><div class="lab">Description ${copyBtn('body')}</div>
+      <div class="seg" id="mkStyle" style="margin-bottom:10px"><button data-st="full" class="${frame.style === 'full' ? 'on' : ''}">With details</button><button data-st="short" class="${frame.style === 'short' ? 'on' : ''}">Short</button></div>
+      <textarea id="mkBody" style="min-height:230px">${esc(frame.body)}</textarea></div>
+    ${S.settings.area ? `<div class="mk-field"><div class="lab">Location ${copyBtn('area')}</div><div class="val">${esc(S.settings.area)}</div></div>` : ''}
+    <div class="row" style="margin-top:14px"><button class="btn" id="mkAll">${ICON.copy}Copy everything</button><button class="btn primary" id="mkOpen">${ICON.open}Open Marketplace</button></div>
+    <div style="height:30px"></div>`;
+  fillPhotos(v);
+  const flash = b => { const was = b.innerHTML; b.classList.add('done'); b.innerHTML = `${ICON.check}Copied`; haptic(10); setTimeout(() => { b.classList.remove('done'); b.innerHTML = was; }, 1400); };
+  const value = k => k === 'title' ? frame.title : k === 'price' ? String(Math.round(num$(p.price))) : k === 'area' ? S.settings.area : $('#mkBody').value;
+  $$('[data-copy]', v).forEach(b => b.onclick = () => { const t = value(b.dataset.copy); if (bridge) bridge.copyText(t); else navigator.clipboard?.writeText(t).catch(() => {}); flash(b); });
+  $$('[data-ti]', v).forEach(b => b.onclick = () => { frame.title = titles[+b.dataset.ti]; $$('[data-ti]', v).forEach(x => { x.classList.toggle('on', x === b); $('.check', x).classList.toggle('on', x === b); }); });
+  $$('[data-st]', v).forEach(b => b.onclick = () => { frame.style = b.dataset.st; frame.body = genListing(p, frame.style); render(); });
+  $('#mkBody').oninput = () => { frame.body = $('#mkBody').value; };
+  $('#mkPriceOk')?.addEventListener('click', () => { const v2 = $('#mkPrice').value.trim(); if (num$(v2) == null) return toast('Type a price first'); p.price = v2; save(); render(); });
+  $('#mkAll').onclick = () => copyText([frame.title, price != null ? fmt$(price) : '', '', $('#mkBody').value].filter((x, i) => x || i === 2).join('\n'), 'Copied the whole listing');
+  $('#lsShare').onclick = () => shareText([frame.title, price != null ? fmt$(price) : '', '', $('#mkBody').value].join('\n'), frame.title);
+  $('#mkOpen').onclick = () => openUrl('https://www.facebook.com/marketplace/create/item');
+  $('#mkPh')?.addEventListener('click', () => sharePhotos(photos, `bench-${pad(p.no)}`));
+};
+// Hand the piece's photos to the share menu (Facebook, Messages…), all at once
+async function sharePhotos(ids, base) {
+  const list = []; for (const id of ids) { const d = await photoGet(id); if (d) list.push(d.split(',')[1]); }
+  if (!list.length) return toast('No photos to share');
+  if (bridge && bridge.shareImages) { bridge.shareImages(JSON.stringify(list), base); return; }
+  try { const files = await Promise.all(list.map(async (b, i) => new File([await (await fetch('data:image/jpeg;base64,' + b)).blob()], `${base}-${i + 1}.jpg`, { type: 'image/jpeg' }))); await navigator.share({ files }); }
+  catch (e) { toast('Sharing photos works from the phone app'); }
+}
+// Change where a piece is: marking it sold asks who bought it; marking it finished offers to print its card
+function setStatus(p, s) {
+  if (s === p.status) return;
+  if (s === 'sold') return markSoldSheet(p);
+  const was = p.status; p.status = s;
+  if (s === 'available' && !p.doneDate) p.doneDate = today();
+  if (s !== 'sold' && was === 'sold') { p.storyLocked = false; }
+  save(); autoPublish(8000); render();
+  if (s === 'available' && was === 'building' && !p.printed) askPrint(p);
+}
+function photoSheet(id) {
+  openSheet(`<img data-photo="${id}" alt="" style="width:100%;border-radius:14px;display:block">`); fillPhotos($('#sheetCard'));
+}
+async function openStoryPage(p) {
+  if (S.settings.pageUrl) { const [link] = await readyLinks([p]); if (link) return openUrl(link); }
+  location.href = 'story.html' + await pageHash(p);
+}
 function markSoldSheet(p) {
   openSheet(`<h2>Mark No. ${pad(p.no)} sold</h2><label class="f">Sold to <span>(optional)</span></label><input id="sto" value="${esc(p.soldTo || '')}" placeholder="Name">
     <div class="row"><div><label class="f">Price</label><input id="spr" inputmode="decimal" value="${esc(p.price || '')}" placeholder="$"></div><div><label class="f">Date</label><input id="sdt" type="date" value="${esc(p.soldDate || today())}"></div></div>
     <button class="btn primary wide" id="sok" style="margin-top:18px">Mark sold</button>`);
-  $('#sok').onclick = () => { p.status = 'sold'; p.soldTo = $('#sto').value.trim(); p.price = $('#spr').value.trim(); p.soldDate = $('#sdt').value || today(); save(); closeSheet(); render(); toast(`No. ${pad(p.no)} sold`); };
+  $('#sok').onclick = () => {
+    p.soldTo = $('#sto').value.trim(); p.price = $('#spr').value.trim(); p.soldDate = $('#sdt').value || today(); p.doneDate ||= p.soldDate;
+    // the buyer's story stays as it is now, even if Bench words stories differently later
+    if (!p.storyEdited) { p.story = genStory(p); p.storyLocked = true; }
+    p.status = 'sold'; save(); autoPublish(8000); closeSheet(); render(); toast(`No. ${pad(p.no)} sold`);
+  };
 }
 // Same design, woods and template; new number, no photos, back to Building
 function duplicatePiece(p) {
   const d = clone(p);
-  Object.assign(d, { id: uid(), no: nextNo(), date: today(), status: 'building', photos: [], buildPhotos: [], story: '', storyEdited: false, soldTo: '', soldDate: '', stockUsed: null, cost: '', firstCombo: undefined });
+  Object.assign(d, { id: uid(), no: nextNo(), date: today(), status: 'building', photos: [], buildPhotos: [], story: '', storyEdited: false, storyLocked: false, soldTo: '', soldDate: '', doneDate: '', stockUsed: null, cost: '', firstCombo: undefined, printed: '', pubId: undefined, pubHash: undefined });
   if (d.board) d.board.done = [];
   stack.push({ view: 'editPiece', params: {}, draft: d }); render(true); scrollTo(0, 0);
   toast(`Copy of No. ${pad(p.no)}. Change anything, then Save.`);
@@ -1332,13 +1564,19 @@ async function buildPhotoSheet(p, b) {
   $('#bdel').onclick = () => { p.buildPhotos = p.buildPhotos.filter(x => x !== b); photoDel(b.id); save(); autoPublish(8000); closeSheet(); render(); };
 }
 function storySheet(p) {
-  openSheet(`<h2>Story</h2><textarea id="st" style="min-height:300px">${esc(storyOf(p))}</textarea>
-    <div class="row" style="margin-top:12px"><button class="btn" id="sr">Rewrite</button><button class="btn" id="sc">Polish with Claude</button></div>
+  const was = storyOf(p);
+  openSheet(`<h2>Story</h2><textarea id="st" style="min-height:300px">${esc(was)}</textarea>
+    <div class="row" style="margin-top:12px"><button class="btn" id="sr">Try other wording</button><button class="btn" id="sc">Polish with Claude</button></div>
     <p class="note" id="sch" hidden>Copied. Paste it into the Claude app, then paste Claude's story into the box above and tap Save.</p>
     <button class="btn primary wide" id="ss" style="margin-top:10px">Save</button>`);
-  $('#sr').onclick = () => { $('#st').value = genStory({ ...p, id: p.id + uid() }); };
+  // Same facts, different wording each tap
+  $('#sr').onclick = () => { planCache = new Map(); $('#st').value = genStory({ ...p, id: p.id + uid() }); };
   $('#sc').onclick = () => { copyText(claudePrompt(p), 'Copied for Claude'); $('#sch').hidden = false; };
-  $('#ss').onclick = () => { const t = $('#st').value.trim(); p.storyEdited = t !== genStory(p); p.story = t; save(); closeSheet(); render(); };
+  $('#ss').onclick = () => {
+    const t = $('#st').value.trim();
+    if (t !== was) { p.storyEdited = t !== genStory(p); p.story = t; if (!p.storyEdited) p.storyLocked = false; save(); autoPublish(8000); }
+    closeSheet(); render();
+  };
 }
 
 async function qrSheet(p) {
@@ -1351,9 +1589,9 @@ async function qrSheet(p) {
     $('#qset').onclick = () => pageSetupSheet(() => qrSheet(p));
     return;
   }
-  try { await document.fonts.load('600 76px Fraunces'); } catch (e) {}
+  try { await document.fonts.load('760 76px Archivo'); await document.fonts.load('500 30px Archivo'); } catch (e) {}
   const tag = tagCanvas(p, link, await loadImg(logoSrc()));
-  openSheet(`<h2>QR tag · No. ${pad(p.no)}</h2><div class="qrbox"><img src="${tag.toDataURL()}" alt="QR tag"></div>
+  openSheet(`<h2>QR tag for No. ${pad(p.no)}</h2><div class="qrbox"><img src="${tag.toDataURL()}" alt="QR tag"></div>
     <p class="note">Print it at least 2.5 inches wide as a hang tag or card. Scanning it opens this piece&rsquo;s story page.</p>
     <div class="row" style="margin-top:12px"><button class="btn" id="qsave">Save</button><button class="btn" id="qshare">Share</button><button class="btn" id="qpv">Preview</button></div>
     <button class="btn primary block" id="qcard" style="margin-top:12px">Print a card</button>`);
@@ -1541,22 +1779,22 @@ function bindStock(p, redraw) {
 // Strip direction + grain toggle under a template piece preview
 function angleRow(o) {
   const a = o.angle || 0;
-  return `<div class="anglerow"><div class="small muted">Strips</div>
+  return `<label class="f">Strip direction</label><div class="anglerow" style="margin-top:0">
     <div class="seg" id="ang">${[[0, 'Along'], [90, 'Across'], [45, '↗'], [-45, '↘']].map(([d, l]) => `<button data-ang="${d}" class="${a === d ? 'on' : ''}">${l}</button>`).join('')}</div>
-    <input type="range" id="angr" min="-90" max="90" step="5" value="${a}">
-    <button class="chip ${GR.on ? 'avail' : ''}" id="gtog">Grain ${GR.on ? 'on' : 'off'}</button></div>`;
+    <input type="range" id="angr" min="-90" max="90" step="5" value="${a}" aria-label="Strip angle"></div>
+    <button class="swrow" id="gtog" style="padding-bottom:0"><div class="grow"><div class="t">Wood grain in the drawing</div></div><span class="switch ${GR.on ? 'on' : ''}"><i></i></span></button>`;
 }
 function bindAngle(root, o, redraw) {
   const set = d => { o.angle = d; $$('[data-ang]', root).forEach(x => x.classList.toggle('on', +x.dataset.ang === d)); const r = $('#angr', root); if (r) r.value = d; redraw(); };
   $$('[data-ang]', root).forEach(b => b.onclick = () => set(+b.dataset.ang));
   $('#angr', root)?.addEventListener('input', e => set(+e.target.value));
-  $('#gtog', root)?.addEventListener('click', e => { GR.on = !GR.on; S.settings.grain = GR.on; save(); e.target.textContent = 'Grain ' + (GR.on ? 'on' : 'off'); e.target.classList.toggle('avail', GR.on); redraw(); });
+  $('#gtog', root)?.addEventListener('click', () => { GR.on = !GR.on; S.settings.grain = GR.on; save(); $('#gtog .switch', root).classList.toggle('on', GR.on); redraw(); });
 }
 
 /* ---------- Boards ---------- */
 const patName = bd => bd.style === 'multi' ? (bd.name || 'Two-step') : bd.style === 'end' ? (BD.PATTERNS[bd.pattern]?.name || 'End grain') : (bd.preset === 'pinstripe' ? 'Pinstripe' : 'Stripes');
 const styleName = bd => bd.style === 'multi' ? 'Two-step end grain' : BD.STYLES[bd.style] || '';
-const boardTitle = bd => bd.style === 'edge' ? 'Edge grain' + (bd.preset === 'pinstripe' ? ' · Pinstripe' : '') : `${styleName(bd)} · ${patName(bd)}`;
+const boardTitle = bd => bd.style === 'edge' ? 'Edge grain' + (bd.preset === 'pinstripe' ? ', pinstripe' : '') : `${styleName(bd)}, ${patName(bd).toLowerCase()}`;
 const boardThumb = bd => BD.draw(bd, woodById, 3, { plain: true });
 const dimsText = bd => `${BD.frac(BD.lengthOf(bd))} × ${BD.frac(BD.widthOf(bd))} × ${BD.frac(bd.T)}`;
 const dimsHTML = bd => `${fracHTML(BD.lengthOf(bd))} × ${fracHTML(BD.widthOf(bd))} × ${fracHTML(bd.T)}`;
@@ -1730,7 +1968,7 @@ function boardCutSheet(p) {
       ${stockBlock(p)}
       <p class="note">Allowances: 1/16" for planing strips, 1/8" for flattening, 1/8" kerf per cut, and 2" of panel for squaring the ends.${saved ? '' : ' Save the piece to keep your checkmarks.'}</p>
       <div class="row" style="margin-top:12px"><button class="btn" id="cc">Copy</button><button class="btn primary" id="cs">Share</button></div>`);
-    squigInto($('#wsq'), n / c.steps.length, { animate: n > 0 && n < c.steps.length });
+    $('#wsq').innerHTML = `<div class="prog"><i style="width:${Math.round(100 * n / c.steps.length)}%"></i></div>`;
     $$('[data-step]').forEach(b => b.onclick = () => {
       const id = c.steps[+b.dataset.step].id;
       bd.done = bd.done.includes(id) ? bd.done.filter(x => x !== id) : [...bd.done, id];
@@ -1752,71 +1990,74 @@ VIEWS.editPiece = ({ id }, frame) => {
   const existing = id ? S.pieces.find(x => x.id === id) : null;
   const p = frame.draft ||= existing ? structuredClone(existing) : blankPiece();
   p.buildPhotos ??= [];
-  frame.guard = () => { confirmSheet('Discard changes?', 'Discard', () => { frame.guard = null; back(); }); return false; };
+  frame.guard = () => { confirmSheet('Leave without saving?', 'Leave', () => { frame.guard = null; back(); }, 'Your changes to this piece will be lost.'); return false; };
   setTop(existing ? `Edit No. ${pad(p.no)}` : 'New piece', `<button class="btn small primary" id="saveP">Save</button>`, true);
-  const v = $('#view'), type = typeById(p.type), dock = type.board || type.bowl;
+  const v = $('#view'), type = typeById(p.type);
   if (type.board) { p.board = p.board ? BD.upgrade(p.board, p.woods.length ? p.woods : S.shop) : newBoard(); p.woods = BD.woods(p.board); }
   if (type.bowl) { if (!p.bowl) p.bowl = B.defaults(contrastPair(S.shop)); p.woods = bowlWoods(p.bowl); }
-  const wc = woodCost({ ...p, cost: '' });
+  const wc = woodCost({ ...p, cost: '' }), tplType = !type.board && !type.bowl;
   v.innerHTML = `
-    <label class="f" style="margin-top:4px">What is it?</label>
-    <div class="filters">${S.types.map(t => `<button data-t="${t.id}" class="${p.type === t.id ? 'on' : ''}">${esc(t.name)}</button>`).join('')}<button data-t="+">+ New type</button></div>
-    ${dock ? '<div class="pvdock" id="pvw"></div>' : ''}
-    <div id="slots"></div>
+    <div class="filters" style="margin-top:2px">${S.types.map(t => `<button data-t="${t.id}" class="${p.type === t.id ? 'on' : ''}">${esc(t.name)}</button>`).join('')}<button data-t="+">${ICON.plus.replace('<svg', '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"')} New type</button></div>
+    <div class="pvdock" id="pvw"></div>
+    ${type.slots.length ? `<div class="tray"><div class="tray-h">Design</div><div id="slots"></div>${tplType ? `<div id="angw"></div>` : ''}</div>` : ''}
     ${type.board ? '<div id="boardEd"></div>' : ''}
     ${type.bowl ? '<div id="bowlEd"></div>' : ''}
-    ${dock ? '' : '<div id="pvw"></div>'}
-    ${type.bowl || type.board ? '' : '<div class="tray"><div class="tray-h">Woods</div><div id="woods"></div></div>'}
+    ${tplType ? '<div class="tray"><div class="tray-h">Woods</div><div id="woods"></div></div>' : ''}
     <div class="tray"><div class="tray-h">About this one</div>
-      <label class="f">What's special about it? <span>(optional, goes in the story)</span></label>
-      <textarea id="special" style="min-height:70px" placeholder="e.g. The cherry came from my grandpa's tree">${esc(p.special)}</textarea>
+      <label class="f">What's special about it? <span>Goes in the story</span></label>
+      <textarea id="special" style="min-height:70px" placeholder="The cherry came from my grandpa's tree">${esc(p.special)}</textarea>
       <div id="comboRow"></div>
-      <label class="f">Finished photos</label><div class="photos" id="photos"></div></div>
+      <label class="f">Finished photos <span>The first one leads everywhere</span></label><div class="photos" id="photos"></div></div>
     <div class="tray"><div class="tray-h">Details</div>
-      <div class="row"><div><label class="f" style="margin-top:0">Number</label><input id="no" inputmode="numeric" value="${p.no}"></div><div><label class="f" style="margin-top:0">Date</label><input id="date" type="date" value="${esc(p.date)}"></div></div>
+      <div class="row"><div><label class="f" style="margin-top:0">Number</label><input id="no" inputmode="numeric" value="${p.no}"></div><div><label class="f" style="margin-top:0">Started</label><input id="date" type="date" value="${esc(p.date)}"></div></div>
       <label class="f">Finish</label><select id="finish">${S.finishes.map(f => `<option ${f.name === p.finish ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select>
-      ${type.board || type.bowl ? '' : `<label class="f">Size</label><input id="size" value="${esc(p.size)}" placeholder='e.g. 15 1/2"'>`}
+      ${type.board || type.bowl ? '' : `<label class="f">Size</label><input id="size" value="${esc(p.size)}" placeholder='15 1/2"'>`}
       <div class="row"><div><label class="f">Price</label><input id="price" inputmode="decimal" value="${esc(p.price)}" placeholder="$"></div><div><label class="f">Wood cost</label><input id="cost" inputmode="decimal" value="${esc(p.cost ?? '')}" placeholder="${wc ? '≈ ' + fmt$(wc.v) : '$'}"></div></div>
       ${wc ? `<p class="note">Estimated from the cut list at your prices. Leave it blank to use the estimate.</p>` : ''}
-      <label class="f">Status</label>
+      <label class="f">Where it's at</label>
       <div class="seg" id="status">${[['building', 'Building'], ['available', 'Finished'], ['sold', 'Sold']].map(([k, l]) => `<button data-s="${k}" class="${p.status === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <label class="f">Private notes</label><textarea id="notes" placeholder="Only you see these">${esc(p.notes)}</textarea></div>
-    ${existing ? `<button class="btn wide danger" id="delP" style="margin-top:20px">Delete this piece</button>` : ''}<div style="height:30px"></div>`;
+      <label class="f">Private notes <span>Only you see these</span></label><textarea id="notes" style="min-height:80px">${esc(p.notes)}</textarea></div>
+    ${existing ? `<button class="btn wide danger" id="delP" style="margin-top:20px">${ICON.trash} Delete this piece</button>` : ''}<div style="height:30px"></div>`;
   const readFields = () => {
     p.no = parseInt($('#no').value) || p.no; p.date = $('#date').value; p.finish = $('#finish').value;
     p.size = $('#size')?.value.trim() || ''; p.price = $('#price').value.trim(); p.cost = $('#cost').value.trim(); p.notes = $('#notes').value; p.special = $('#special').value;
   };
   $$('[data-t]', v).forEach(b => b.onclick = () => { readFields(); if (b.dataset.t === '+') return go('editType', {}); p.type = b.dataset.t; if (typeById(p.type).bowl && !p.bowl) { p.bowl = B.defaults(contrastPair(S.shop)); p.woods = bowlWoods(p.bowl); } if (typeById(p.type).board && !p.board) { p.board = newBoard(); p.woods = BD.woods(p.board); } render(); });
   let comboRedraw = () => {};
+  // The preview sits at the top and follows every change below it
   const drawPreview = () => {
     try { comboRedraw(); } catch (e) {}
     const art = pieceArt(p, viewMode);
-    if (dock) {
-      const tag = type.board ? dimsHTML(p.board) : `${fracHTML(p.bowl.D)} × ${fracHTML(p.bowl.H)}`;
-      $('#pvw').innerHTML = `<div class="preview bar" id="pvbox">${art}<div class="pvbar"><span class="pvtag">${tag}</span><span class="tools"><button class="mini" id="b3d">${ICON.cube}3D</button>${type.board ? `<button class="mini" id="bdcut">${ICON.list}Cut list</button>` : p.bowl.kind === 'seg' ? `<button class="mini" id="bcut">${ICON.list}Cut list</button>` : ''}</span></div></div>`;
-    } else $('#pvw').innerHTML = art ? `<div class="preview" style="margin-top:14px;min-height:150px" id="pvbox">${art}</div>${type.slots.length ? `<div style="margin-top:10px">${modeSeg(viewMode)}</div>` : ''}${type.slots.length ? angleRow(p) : ''}` : '';
-    if (art && type.slots.length) bindMode(v, () => { $('#pvbox').innerHTML = pieceArt(p, viewMode); }, 'mode', p);
+    const tag = type.board ? dimsHTML(p.board) : type.bowl ? `${fracHTML(p.bowl.D)} × ${fracHTML(p.bowl.H)}` : stripW(p) && p.woods.length ? `${fracHTML(stripW(p).reduce((s, x) => s + x, 0))} blank` : '';
+    $('#pvw').innerHTML = art ? `<div class="preview bar" id="pvbox"><div class="pvart">${art}</div><div class="pvbar"><span class="pvtag">${tag}</span><span class="tools">${type.slots.length ? `<button class="mini" id="pvMode">${viewMode === 'templates' ? 'Finished' : 'Templates'}</button>` : ''}<button class="mini" id="b3d">${ICON.cube}3D</button>${type.board ? `<button class="mini" id="bdcut">${ICON.list}Cut list</button>` : type.bowl && p.bowl.kind === 'seg' ? `<button class="mini" id="bcut">${ICON.list}Cut list</button>` : ''}</span></div></div>`
+      : `<div class="preview" style="min-height:96px"><span class="muted small">${type.slots.length ? `Pick the ${joinList(type.slots.map(s => s.name.toLowerCase()))} and the woods to see it here` : 'Pick the woods to see it here'}</span></div>`;
+    $('#pvMode', v)?.addEventListener('click', () => { viewMode = viewMode === 'templates' ? 'finished' : 'templates'; drawPreview(); });
     $('#b3d', v)?.addEventListener('click', () => open3D(p));
     $('#bcut', v)?.addEventListener('click', () => cutListSheet(p));
     $('#bdcut', v)?.addEventListener('click', () => boardCutSheet(p));
-    if (!dock) bindAngle(v, p, () => { $('#pvbox').innerHTML = pieceArt(p, viewMode); });
   };
-  $('#slots').innerHTML = type.slots.map((s, si) => {
-    const tpls = allTemplates().filter(t => t.group === s.group);
-    return `<label class="f">${esc(s.name)}</label><div class="filters" data-slot="${si}">${tpls.map(t => `<button class="tpl ${p.templates[s.name] === t.id ? 'sel' : ''}" data-tp="${t.id}">
-        <div class="pv" style="height:70px">${tplArt(t, p.woods, p.widths, true, colsValid(p) ? p.cols : null)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || '<span class="muted small">No templates here yet. Add them in Catalog.</span>'}</div>`;
-  }).join('');
-  $$('[data-slot]', v).forEach(row => {
-    const s = type.slots[+row.dataset.slot];
-    $$('[data-tp]', row).forEach(b => b.onclick = () => {
-      p.templates[s.name] = p.templates[s.name] === b.dataset.tp ? undefined : b.dataset.tp;
-      $$('[data-tp]', row).forEach(x => x.classList.toggle('sel', x.dataset.tp === p.templates[s.name])); drawPreview();
+  if ($('#slots')) {
+    $('#slots').innerHTML = type.slots.map((s, si) => {
+      const tpls = allTemplates().filter(t => t.group === s.group);
+      return `<label class="f" style="${si ? '' : 'margin-top:0'}">${esc(s.name)}</label><div class="filters" data-slot="${si}">${tpls.map(t => `<button class="tpl ${p.templates[s.name] === t.id ? 'sel' : ''}" data-tp="${t.id}">
+          <div class="pv" style="height:70px">${tplArt(t, p.woods, p.widths, true, colsValid(p) ? p.cols : null)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || '<span class="muted small">Nothing in this section yet. Add templates in the Catalog.</span>'}</div>${s.group === 'kitchen-head' ? `<p class="note svnote" data-sv="${si}" hidden></p>` : ''}`;
+    }).join('');
+    // Once the head is picked, say which side view goes on the edge of the blank
+    const svNotes = () => $$('[data-sv]', v).forEach(n => { const sv = sideViewOf(tplById(p.templates[type.slots[+n.dataset.sv].name])); n.hidden = !sv; n.innerHTML = sv ? `Side view <b>${esc(sv.code)}</b>, ${esc(sv.name.toLowerCase())}` : ''; });
+    svNotes();
+    $$('[data-slot]', v).forEach(row => {
+      const s = type.slots[+row.dataset.slot];
+      $$('[data-tp]', row).forEach(b => b.onclick = () => {
+        p.templates[s.name] = p.templates[s.name] === b.dataset.tp ? undefined : b.dataset.tp;
+        $$('[data-tp]', row).forEach(x => x.classList.toggle('sel', x.dataset.tp === p.templates[s.name])); drawPreview(); svNotes();
+      });
     });
-  });
+    if ($('#angw')) { $('#angw').innerHTML = angleRow(p); bindAngle($('#angw'), p, drawPreview); }
+  }
   if (type.board) boardEditor($('#boardEd'), p, () => { p.woods = BD.woods(p.board); drawPreview(); });
   if (type.bowl) bowlEditor($('#bowlEd'), p, () => { p.woods = bowlWoods(p.bowl); drawPreview(); });
   drawPreview();
-  if (!type.bowl && !type.board) { p.widths ||= []; woodPicker($('#woods'), p.woods, () => { drawPreview(); $$('#slots .tpl').forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), p.woods, p.widths, true, colsValid(p) ? p.cols : null); }); }, p.widths, () => pieceArt(p), (cols, url) => { if (cols) { p.cols = cols; p.colsSig = p.woods.join(','); } else { delete p.cols; delete p.colsSig; } if (url) { const id = uid(); photoPut(id, url).then(() => { p.photos.push(id); drawPhotos(); }); } }); }
+  if (tplType) { p.widths ||= []; woodPicker($('#woods'), p.woods, () => { drawPreview(); $$('#slots .tpl').forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), p.woods, p.widths, true, colsValid(p) ? p.cols : null); }); }, p.widths, () => pieceArt(p)); }
   const drawPhotos = () => {
     $('#photos').innerHTML = p.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" alt=""><button data-rmp="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="addPh" aria-label="Add photos">+</button>`;
     fillPhotos($('#photos'));
@@ -1826,21 +2067,19 @@ VIEWS.editPiece = ({ id }, frame) => {
   drawPhotos();
   const drawCombo = () => {
     const st = comboState(p), el = $('#comboRow'); if (!el) return;
-    const when = q => q ? `No. ${pad(q.no)}` : '';
     if (st === 'none') { el.innerHTML = ''; return; }
     if (st === 'repeat') {
       const prev = S.pieces.filter(q => q.id !== p.id && q.no < p.no && comboKey(q.woods) === comboKey(p.woods)), n = prev.length + 1;
-      el.innerHTML = `<p class="note" style="margin:10px 0 0">Bench has this mix of woods logged before (${prev.slice(-3).map(when).join(', ')}), so the story says it's the ${ordinal(n)}.</p>`; return;
+      el.innerHTML = `<p class="note" style="margin:12px 0 0">You've used this mix of woods before (${prev.slice(-3).map(q => `No. ${pad(q.no)}`).join(', ')}), so the story says it's the ${ordinal(n)}.</p>`; return;
     }
     if (st === 'ask' || st === 'no' || (st === 'first' && !historyKnown())) {
       const first = p.firstCombo === true, no = p.firstCombo === false;
-      el.innerHTML = `<div style="margin-top:10px"><div class="t" style="font-weight:600">First time you've made this mix of woods?</div>
-        <div class="s muted small" style="margin:2px 0 8px">Bench hasn't logged it before, but you made pieces before Bench. Answer once and it remembers for next time.</div>
-        <div class="seg" id="cmbSeg"><button data-c="1" class="${first ? 'on' : ''}">Yes, first time</button><button data-c="0" class="${no ? 'on' : ''}">No, made it before</button></div></div>`;
+      el.innerHTML = `<label class="f">First time you've made this mix of woods? <span>Bench hasn't seen it before. Answer once and it remembers.</span></label>
+        <div class="seg" id="cmbSeg"><button data-c="1" class="${first ? 'on' : ''}">Yes, a first</button><button data-c="0" class="${no ? 'on' : ''}">No, made it before</button></div>`;
       $$('#cmbSeg button', el).forEach(b => b.onclick = () => { p.firstCombo = b.dataset.c === '1'; drawCombo(); });
       return;
     }
-    el.innerHTML = `<p class="note" style="margin:10px 0 0">First time you've logged this mix of woods. The story says so.</p>`;
+    el.innerHTML = `<p class="note" style="margin:12px 0 0">A new mix of woods for the shop. The story says so.</p>`;
   };
   drawCombo(); comboRedraw = drawCombo;
   $$('[data-s]', v).forEach(b => b.onclick = () => { p.status = b.dataset.s; $$('[data-s]', v).forEach(x => x.classList.toggle('on', x === b)); });
@@ -1849,9 +2088,12 @@ VIEWS.editPiece = ({ id }, frame) => {
     if (type.bowl) p.woods = bowlWoods(p.bowl);
     if (type.board) { BD.fix(p.board); p.woods = BD.woods(p.board); }
     Object.keys(p.templates).forEach(k => p.templates[k] || delete p.templates[k]);
-    if (S.pieces.some(x => x.no === p.no && x.id !== p.id)) return toast(`No. ${pad(p.no)} is already used`);
-    if (p.status === 'sold' && !p.soldDate) p.soldDate = today();
+    if (S.pieces.some(x => x.no === p.no && x.id !== p.id)) return toast(`No. ${pad(p.no)} is already taken. Pick another number.`);
     const i = S.pieces.findIndex(x => x.id === p.id), was = i >= 0 ? S.pieces[i].status : 'building';
+    if (p.status !== 'building' && !p.doneDate) p.doneDate = today();
+    if (p.status === 'sold' && !p.soldDate) p.soldDate = today();
+    if (p.status === 'sold' && was !== 'sold' && !p.storyEdited) { planCache = new Map(); p.story = genStory(p); p.storyLocked = true; }
+    if (p.status !== 'sold') p.storyLocked = false;
     if (i >= 0) { S.pieces[i].photos.filter(ph => !p.photos.includes(ph)).forEach(photoDel); S.pieces[i] = p; } else S.pieces.push(p);
     save(); autoPublish(10000); frame.guard = null; stack.pop();
     if (i < 0) { stack.push({ view: 'piece', params: { id: p.id } }); toast(`Logged No. ${pad(p.no)}`); }
@@ -1874,7 +2116,7 @@ function longPress(root, sel, fn) {
   if (!root) return;
   let timer = null, sx = 0, sy = 0, fired = false;
   const cancel = () => clearTimeout(timer);
-  root.addEventListener('pointerdown', e => { const el = e.target.closest(sel); fired = false; if (!el || !root.contains(el)) return; sx = e.clientX; sy = e.clientY; cancel(); timer = setTimeout(() => { fired = true; haptic(14); fn(el); }, 480); });
+  root.addEventListener('pointerdown', e => { const el = e.target.closest(sel); fired = false; if (!el || !root.contains(el)) return; sx = e.clientX; sy = e.clientY; cancel(); timer = setTimeout(() => { fired = true; haptic(14); fn(el); setTimeout(() => fired = false, 700); }, 480); });
   root.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 9) cancel(); });
   ['pointerup', 'pointercancel'].forEach(ev => root.addEventListener(ev, cancel));
   root.addEventListener('click', e => { if (fired) { e.stopPropagation(); e.preventDefault(); fired = false; } }, true);
@@ -1890,27 +2132,28 @@ function askText(title, value, onDone, label = 'Name') {
   const ok = () => { const v = $('#atx').value.trim(); if (!v) return; closeSheet(); onDone(v); };
   $('#atok').onclick = ok; $('#atx').onkeydown = e => { if (e.key === 'Enter') ok(); };
 }
-function deletePieceNow(p) {
+function deletePieceNow(p, inside = false) {
   confirmSheet(`Delete No. ${pad(p.no)}?`, 'Delete', () => {
     const at = S.pieces.findIndex(x => x.id === p.id), gone = S.pieces[at]; if (!gone) return;
-    S.pieces.splice(at, 1); save(); render();
+    S.pieces.splice(at, 1); save(); if (inside) stack = [{ view: tab, params: {} }]; render(true);
     toast(`Deleted No. ${pad(gone.no)}`, { action: 'Undo',
       onAction: () => { S.pieces.splice(Math.min(at, S.pieces.length), 0, gone); save(); render(); toast(`No. ${pad(gone.no)} is back`); },
       onTimeout: () => { if (!S.pieces.includes(gone)) [...(gone.photos || []), ...(gone.buildPhotos || []).map(b => b.id)].forEach(photoDel); } });
   });
 }
-function pieceMenu(p) {
+function pieceMenu(p, inside = false) {
   if (!p) return;
-  const setSt = k => { const was = p.status; p.status = k; save(); render(); if (k === 'available' && was === 'building' && !p.printed) askPrint(p); };
   actionSheet(`${typeName(p)} No. ${pad(p.no)}`, [
-    ['Open', () => go('piece', { id: p.id })],
-    ['Edit', () => go('editPiece', { id: p.id })],
-    ['Make a copy', () => duplicatePiece(p)],
-    p.status !== 'building' && ['Mark as building', () => setSt('building')],
-    p.status !== 'available' && ['Mark as finished', () => setSt('available')],
-    p.status !== 'sold' && ['Mark as sold', () => setSt('sold')],
+    !inside && ['Open', () => go('piece', { id: p.id })],
+    !inside && ['Edit', () => go('editPiece', { id: p.id })],
+    ['Make another like it', () => duplicatePiece(p)],
+    p.status !== 'building' && ['Mark as building', () => setStatus(p, 'building')],
+    p.status !== 'available' && ['Mark as finished', () => setStatus(p, 'available')],
+    p.status !== 'sold' && ['Mark as sold', () => setStatus(p, 'sold')],
+    ['Listing for Marketplace', () => go('listing', { id: p.id })],
     ['Print a card', () => S.settings.pageUrl ? printCardsSheet(p) : pageSetupSheet(() => printCardsSheet(p))],
-    ['Delete', () => deletePieceNow(p), true]
+    S.settings.pageUrl && ['Share the story link', async () => { const [link] = await readyLinks([p]); if (link) shareText(link, pieceTitle(p)); }],
+    ['Delete', () => deletePieceNow(p, inside), true]
   ]);
 }
 function projectMenu(q) {
@@ -1930,8 +2173,9 @@ function removeTplNow(t) {
 async function tplMenu(t) {
   if (!t) return;
   const ix = await stlLoad(), file = ix[t.id] || t.stlName;
-  actionSheet(`${t.code} · ${t.name}`, [
+  actionSheet(`${t.code} ${t.name}`, [
     ['Open', () => go('template', { id: t.id })],
+    file && ['View in 3D', () => openTpl3D(t.id)],
     [S.printed[t.id] ? 'Mark as not printed' : 'Mark as printed', () => { if (S.printed[t.id]) delete S.printed[t.id]; else S.printed[t.id] = today(); save(); render(); }],
     file && ['Download STL', () => ix[t.id] ? saveAsset('stl/' + file, file, 'model/stl') : saveStored('stl:' + t.id, file, 'model/stl')],
     ['Rename', () => askText('Rename', t.name, v => { editTpl(t, { name: v }); render(); })],
@@ -1985,32 +2229,33 @@ let catGroup = null, catPrinted = 'all';
 let galFilter = 'all', galMode = 'photos';
 const projTitle = q => q.title || 'Untitled';
 VIEWS.gallery = () => {
-  setTop('Gallery');
+  setTop('Gallery', `<button class="icon" id="gRender" aria-label="${galMode === 'renders' ? 'Show my photos' : 'Show drawings'}">${galMode === 'renders' ? ICON.photo : ICON.shapes}</button>`);
   S.projects = (S.projects || []).filter(q => q.title || q.notes || (q.photos || []).length);
   const v = $('#view');
-  const items = [...(galFilter === 'other' ? [] : S.pieces.map(p => ({ k: 'piece', p, d: p.date || '', t: `${typeName(p)} No. ${pad(p.no)}` }))), ...(galFilter === 'pieces' ? [] : S.projects.map(q => ({ k: 'proj', q, d: q.date || '', t: projTitle(q) })))]
+  const items = [...(galFilter === 'other' ? [] : S.pieces.map(p => ({ k: 'piece', p, d: p.soldDate || p.doneDate || p.date || '' }))), ...(galFilter === 'pieces' ? [] : S.projects.map(q => ({ k: 'proj', q, d: q.date || '' })))]
     .sort((a, b) => (b.d || '').localeCompare(a.d || '') || (b.p?.no || 0) - (a.p?.no || 0));
-  v.innerHTML = `<div class="filters">${[['all', 'Everything'], ['pieces', 'Knives and boards'], ['other', 'Other projects']].map(([k, l]) => `<button data-f="${k}" class="${galFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-    ${galFilter !== 'other' && S.pieces.length ? `<div class="seg" id="galMode" style="margin:2px 0 12px"><button data-gm="photos" class="${galMode === 'photos' ? 'on' : ''}">My photos</button><button data-gm="renders" class="${galMode === 'renders' ? 'on' : ''}">Renders</button></div>` : ''}
+  v.innerHTML = `<div class="filters">${[['all', 'Everything'], ['pieces', 'Shop pieces'], ['other', 'Other projects']].map(([k, l]) => `<button data-f="${k}" class="${galFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div class="ggrid">${items.map((it, i) => {
-      let img = '';
-      if (it.k === 'piece') { const art = pieceArt(it.p), ph = it.p.photos?.[0]; img = galMode === 'renders' && art || !ph ? (art || '') : `<img data-photo="${ph}" alt="">`; }
-      else img = it.q.photos?.length ? `<img data-photo="${it.q.photos[0]}" alt="">` : `<span class="muted">No photo yet</span>`;
-      return `<button class="gtile" data-i="${i}"><div class="gimg">${img}</div><div class="gcap"><b>${esc(it.t)}</b><span>${it.k === 'piece' ? esc(woodsLine(it.p)) : esc(it.q.date ? monthYear(it.q.date) : '')}</span></div></button>`;
-    }).join('') || `<p class="muted" style="grid-column:1/-1;text-align:center;margin-top:30px">${galFilter === 'pieces' ? 'No pieces yet.' : 'Nothing here yet. Tap + to add a project and its photos.'}</p>`}</div><div style="height:80px"></div>`;
+      let img = '', title = '', sub = '';
+      if (it.k === 'piece') {
+        const art = pieceArt(it.p), ph = it.p.photos?.[0];
+        img = galMode === 'renders' && art || !ph ? (art || '') : `<img data-photo="${ph}" alt="">`;
+        title = `<span class="serial">No. ${pad(it.p.no)}</span>`; sub = `${typeName(it.p)}${it.p.status === 'sold' ? ', sold' : ''}`;
+      } else { img = it.q.photos?.length ? `<img data-photo="${it.q.photos[0]}" alt="">` : '<span class="small">No photo yet</span>'; title = esc(projTitle(it.q)); sub = it.q.date ? monthYear(it.q.date) : ''; }
+      return `<button class="gtile" data-i="${i}"><div class="gimg">${img}</div><div class="gcap"><b>${title}</b><span>${esc(sub)}</span></div></button>`;
+    }).join('') || `<p class="muted" style="grid-column:1/-1;margin:30px 4px">${galFilter === 'pieces' ? 'No pieces yet.' : 'Nothing here yet. Tap Add a project for the things you make outside the shop, like the radio.'}</p>`}</div><div style="height:80px"></div>`;
+  $('#gRender').onclick = () => { galMode = galMode === 'renders' ? 'photos' : 'renders'; render(); toast(galMode === 'renders' ? 'Showing drawings' : 'Showing your photos'); };
   $$('[data-f]', v).forEach(b => b.onclick = () => { galFilter = b.dataset.f; render(); });
-  $$('[data-gm]', v).forEach(b => b.onclick = () => { galMode = b.dataset.gm; render(); });
   $$('.gtile', v).forEach(b => b.onclick = () => { const it = items[+b.dataset.i]; go(it.k === 'piece' ? 'piece' : 'project', { id: (it.p || it.q).id }); });
   longPress(v, '.gtile', el => { const it = items[+el.dataset.i]; if (it.k === 'piece') pieceMenu(it.p); else projectMenu(it.q); });
   fillPhotos(v);
   fab(() => { const q = { id: uid(), title: '', date: today(), notes: '', photos: [] }; S.projects.push(q); save(); go('project', { id: q.id }); }, 'Add a project', true);
 };
-const woodsLine = p => [...new Set(p.woods.map(i => woodById(i)?.name).filter(Boolean))].slice(0, 3).join(', ');
 VIEWS.project = ({ id }) => {
   const q = (S.projects || []).find(x => x.id === id); if (!q) return back();
   setTop(projTitle(q), `<button class="icon" id="delProj" aria-label="Delete">${ICON.trash}</button>`);
   const v = $('#view');
-  v.innerHTML = `<div class="tray"><label class="f" style="margin-top:0">What is it?</label><input id="pjT" value="${esc(q.title)}" placeholder="Wood radio, kid's stool…" autocomplete="off">
+  v.innerHTML = `<div class="tray" style="margin-top:4px"><label class="f" style="margin-top:0">What is it?</label><input id="pjT" value="${esc(q.title)}" placeholder="Wood radio, kid's stool…" autocomplete="off">
     <label class="f">Date</label><input id="pjD" type="date" value="${esc(q.date || '')}">
     <label class="f">Notes <span>(optional)</span></label><textarea id="pjN" style="min-height:90px" placeholder="Woods, how it went, who it's for">${esc(q.notes || '')}</textarea></div>
     <div class="sec">Photos</div><div class="photos" id="pjP"></div><div style="height:40px"></div>`;
@@ -2029,7 +2274,7 @@ VIEWS.project = ({ id }) => {
 };
 
 VIEWS.catalog = () => {
-  setTop('Catalog', `<button class="icon" id="addTpl" aria-label="Add templates">${ICON.plus}</button>`);
+  setTop('Catalog', `<button class="icon" id="tryCombo" aria-label="Try a combination">${ICON.combo}</button><button class="icon" id="addTpl" aria-label="Add templates">${ICON.plus}</button>`);
   const v = $('#view');
   const groups = liveGroups();   // the standard sections always show, even when empty
   if (!groups.some(g => g.id === catGroup)) catGroup = groups[0]?.id;
@@ -2037,34 +2282,36 @@ VIEWS.catalog = () => {
   const nPrinted = inGroup.filter(t => S.printed[t.id]).length;
   let tpls = inGroup;
   if (catPrinted === 'yes') tpls = tpls.filter(t => S.printed[t.id]); else if (catPrinted === 'no') tpls = tpls.filter(t => !S.printed[t.id]);
+  const g = groupById(catGroup);
   v.innerHTML = `
-    <div class="filters">${groups.map(g => `<button data-g="${g.id}" class="${g.id === catGroup ? 'on' : ''}">${esc(g.name)}</button>`).join('')}<button id="addSec" aria-label="Add or remove sections">+ Section</button></div>
-    ${allTemplates().some(t => t.print === false) ? `<button class="card listrow" id="pw" style="border-radius:20px"><div class="grow"><div class="t">Preview woods</div><div style="margin-top:8px">${stripHTML(S.previewWoods)}</div></div><span class="chip">Change</span></button>` : ''}
-    <div class="sec">${esc(groupById(catGroup).name)} <span style="display:flex;align-items:center;gap:10px"><span class="small muted">${nPrinted} of ${inGroup.length} printed</span><button class="btn small" id="secEdit">Edit</button></span></div>
-    <div style="margin:0 2px 12px" id="catq"></div>
-    <div class="seg" id="pf" style="margin-bottom:12px">${[['all', 'All'], ['yes', 'Printed'], ['no', 'Not printed']].map(([k, l]) => `<button data-pf="${k}" class="${catPrinted === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-    <div class="grid">${tpls.map(t => `<button class="tpl" data-tp="${t.id}">${S.printed[t.id] ? '<span class="pbadge">✓</span>' : ''}<div class="pv">${tplArt(t, S.previewWoods)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || `<p class="muted" style="grid-column:1/-1">Nothing in ${esc(groupById(catGroup).name.toLowerCase())} yet. Tap + and choose your STL files${groupById(catGroup).prefix ? `. Name them like ${esc(groupById(catGroup).prefix)}1_name.stl and Bench files them here` : ''}.</p>`}</div>
-    ${S.hiddenTpls.length ? `<button class="card listrow" id="hidT" style="border-radius:20px;margin-top:16px"><div class="grow"><div class="t">${S.hiddenTpls.length} removed template${S.hiddenTpls.length > 1 ? 's' : ''}</div><div class="s">Tap to bring any back</div></div></button>` : ''}
-    <div class="tray" style="margin-top:24px"><div class="tray-h">Try a combination</div><p class="note" style="margin-top:-6px">Pick a type and its parts to see the finished piece.</p>
-      <div class="filters" style="padding-bottom:0">${S.types.filter(t => t.slots.length).map(t => `<button data-ct="${t.id}">${esc(t.name)}</button>`).join('')}</div></div>
+    <div class="filters">${groups.map(x => `<button data-g="${x.id}" class="${x.id === catGroup ? 'on' : ''}">${esc(x.name)}</button>`).join('')}<button id="addSec">${ICON.plus.replace('<svg', '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"')} Section</button></div>
+    <div class="cat-head"><h2>${esc(g.name)}</h2><button class="btn small ghost" id="secEdit">Edit</button></div>
+    ${inGroup.length ? `<div class="row" style="gap:12px;margin:0 2px 12px"><div class="prog" style="flex:1"><i style="width:${Math.round(100 * nPrinted / inGroup.length)}%"></i></div><span class="small muted" style="flex:none">${nPrinted} of ${inGroup.length} printed</span></div>
+    <div class="seg" id="pf" style="margin-bottom:12px">${[['all', 'All'], ['yes', 'Printed'], ['no', 'Not printed']].map(([k, l]) => `<button data-pf="${k}" class="${catPrinted === k ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
+    <div class="grid">${tpls.map(t => `<button class="tpl" data-tp="${t.id}">${S.printed[t.id] ? `<span class="pbadge" aria-label="Printed">${ICON.check}</span>` : ''}<div class="pv">${tplArt(t, S.previewWoods)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('') || `<p class="muted" style="grid-column:1/-1;margin:10px 2px">${inGroup.length ? 'None here.' : `Nothing in ${esc(g.name.toLowerCase())} yet. Tap + and choose your STL files${g.prefix ? `. Name them like ${esc(g.prefix)}1_name.stl and Bench files them here` : ''}.`}</p>`}</div>
+    ${allTemplates().some(t => t.print === false) ? `<button class="card listrow" id="pw" style="margin-top:16px"><div class="grow"><div class="t">Woods for wood templates</div><div style="margin-top:8px">${stripHTML(S.previewWoods)}</div></div><span class="chip">Change</span></button>` : ''}
+    ${S.hiddenTpls.length ? `<button class="card listrow" id="hidT" style="margin-top:16px"><div class="grow"><div class="t">${S.hiddenTpls.length} removed template${S.hiddenTpls.length > 1 ? 's' : ''}</div><div class="s">Tap to bring any back</div></div>${ICON.chev}</button>` : ''}
     <div style="height:30px"></div>`;
-  squigInto($('#catq'), inGroup.length ? nPrinted / inGroup.length : 0);
   $('#hidT', v)?.addEventListener('click', () => {
     const list = BUILTIN_TEMPLATES.filter(t => S.hiddenTpls.includes(t.id)).map(t => tplById(t.id));
-    openSheet(`<h2>Removed templates</h2><div class="card flush">${list.map(t => `<div class="listrow"><div style="width:56px;height:56px;display:grid;place-items:center;flex:none">${tplArt(t, S.previewWoods)}</div><div class="grow"><div class="t">${esc(t.code)} · ${esc(t.name)}</div><div class="s">${esc(groupById(t.group).name)}</div></div><button class="btn small tonal" data-un="${t.id}">Bring back</button></div>`).join('')}</div>`);
+    openSheet(`<h2>Removed templates</h2><div class="card flush">${list.map(t => `<div class="listrow"><div style="width:56px;height:56px;display:grid;place-items:center;flex:none">${tplArt(t, S.previewWoods)}</div><div class="grow"><div class="t">${esc(t.code)}, ${esc(t.name)}</div><div class="s">${esc(groupById(t.group).name)}</div></div><button class="btn small tonal" data-un="${t.id}">Bring back</button></div>`).join('')}</div>`);
     $$('[data-un]').forEach(b => b.onclick = () => { S.hiddenTpls = S.hiddenTpls.filter(x => x !== b.dataset.un); save(); toast(`${b.dataset.un} is back`); if (!S.hiddenTpls.length) closeSheet(); render(); if (S.hiddenTpls.length) $('#hidT').click(); });
   });
   $$('[data-g]', v).forEach(b => b.onclick = () => { catGroup = b.dataset.g; render(); });
   $('#addSec', v).onclick = () => sectionsSheet();
-  $('#secEdit', v).onclick = () => groupMenu(groupById(catGroup));
+  $('#secEdit', v).onclick = () => groupMenu(g);
   longPress(v, '.tpl[data-tp]', el => tplMenu(tplById(el.dataset.tp)));
   longPress(v, '[data-g]', el => groupMenu(groupById(el.dataset.g)));
   $$('[data-pf]', v).forEach(b => b.onclick = () => { catPrinted = b.dataset.pf; render(); });
   $$('[data-tp]', v).forEach(b => b.onclick = () => go('template', { id: b.dataset.tp }));
-  $$('[data-ct]', v).forEach(b => b.onclick = () => go('combo', { type: b.dataset.ct }));
+  $('#tryCombo').onclick = () => {
+    const ts = S.types.filter(t => t.slots.length);
+    if (ts.length === 1) return go('combo', { type: ts[0].id });
+    actionSheet('Try a combination', ts.map(t => [t.name, () => go('combo', { type: t.id })]));
+  };
   const pwB = $('#pw'); if (pwB) pwB.onclick = () => {
     const list = [...S.previewWoods];
-    openSheet(`<h2>Preview woods</h2><div id="pwp"></div><button class="btn primary wide" id="pwok" style="margin-top:16px">Done</button>`);
+    openSheet(`<h2>Woods for wood templates</h2><div id="pwp"></div><button class="btn primary wide" id="pwok" style="margin-top:16px">Done</button>`);
     woodPicker($('#pwp'), list, () => {});
     $('#pwok').onclick = () => { if (list.length) S.previewWoods = list; save(); closeSheet(); render(); };
   };
@@ -2081,16 +2328,62 @@ function editTpl(t, patch) {
   if (x) Object.assign(x, patch); else S.tplEdits[t.id] = { ...(S.tplEdits[t.id] || {}), ...patch };
   save();
 }
+// Side views go by the head: KB2 is traced with KV1 on its edge, and so on (SIDE_VIEW_FOR)
+const sideViewOf = t => { const c = t && SIDE_VIEW_FOR[t.code]; return c ? tplById(c) || null : null; };
+const headsFor = kv => allTemplates().filter(t => SIDE_VIEW_FOR[t.code] === kv.code);
+const in16 = mm => fracHTML(Math.max(1, Math.round(mm / 25.4 * 16)) / 16);
+// A plate's real length × width. Arms and side views sit diagonally on the print bed, so measure along the plate.
+const tplSize = t => {
+  const L = t && t.d ? (D.ptsOf(t.d)[0] || []) : [], box = [Math.max(t.w, t.h), Math.min(t.w, t.h)];
+  if (L.length < 3) return box;
+  const r = G.minRect(L); return r[0] * r[1] < t.w * t.h * 0.85 ? r : box;
+};
+const sizeHTML = t => tplSize(t).map(in16).join(' × ');
+
+/* ---------- A template's STL in 3D ---------- */
+async function stlBytes(t) {
+  const ix = await stlLoad();
+  try { if (ix[t.id]) { const r = await fetch('stl/' + ix[t.id]); if (r.ok) return await r.arrayBuffer(); } } catch (e) {}
+  const u = await photoGet('stl:' + t.id); if (!u) return null;
+  const b = atob(u.slice(u.indexOf(',') + 1)); return Uint8Array.from(b, c => c.charCodeAt(0)).buffer;
+}
+const hasSTL = (t, ix) => !!(t && (ix[t.id] || t.stlName));
+let v3seq = 0;
+// Opens one template in 3D. The arrows step through the rest of its Catalog section without closing,
+// and the page underneath follows along, so closing lands on the template you were looking at.
+async function openTpl3D(id) {
+  const ix = await stlLoad(), t0 = tplById(id); if (!hasSTL(t0, ix)) return toast('This template has no STL file');
+  const list = allTemplates().filter(t => t.group === t0.group && hasSTL(t, ix)).map(t => t.id);
+  if (!list.includes(id)) list.unshift(id);
+  let at = list.indexOf(id);
+  const show = async first => {
+    const my = ++v3seq, t = tplById(list[at]), buf = await stlBytes(t);
+    if (my !== v3seq || (!first && !V3.isOpen())) return;
+    if (!buf) return toast('Could not open that STL');
+    let m; try { m = V3.stl(buf, t.printColor || FIL_DEFAULT); } catch (e) { return toast('Could not read that STL'); }
+    const color = t.printColor || FIL_DEFAULT, fil = (FILAMENTS.find(c => c[0] === color) || ['', ''])[1];
+    const title = `${esc(t.code)} ${esc(t.name)}`;
+    const o = { sub: `${t.d ? sizeHTML(t) : `${in16(m.dims.x)} × ${in16(m.dims.y)}`} × ${in16(m.dims.z)}${fil ? ' · ' + esc(fil) : ''}`, light: lum(color) < 100, rotX: 0.9, rotY: -0.3,
+      nav: { at, count: list.length, go: d => { const n = Math.max(0, Math.min(list.length - 1, at + d)); if (n !== at) { at = n; show(false); } } } };
+    if (first) V3.open(() => m, null, title, o); else V3.swap(() => m, null, title, o);
+    const top = stack[stack.length - 1];
+    if (!first && top.view === 'template' && top.params.id !== t.id) { stack[stack.length - 1] = { view: 'template', params: { id: t.id } }; render(); }
+  };
+  show(true);
+}
 VIEWS.template = ({ id }) => {
   const t = tplById(id); if (!t) return back();
   const isCustom = S.templates.some(x => x.id === id);
   const delBtn = `<button class="icon" id="delT" aria-label="Remove">${ICON.trash}</button>`;
-  setTop(`${t.code} · ${t.name}`, delBtn);
+  setTop(`${t.code} ${t.name}`, delBtn);
   const v = $('#view'), woods = [...S.previewWoods];
   const uses = S.pieces.filter(p => Object.values(p.templates || {}).includes(id));
   const isHead = t.group === 'kitchen-head', guide = guideFor(t);
-  v.innerHTML = `<div class="preview" id="big">${tplArt(t, woods)}</div>
-    <p class="note center">${esc(groupById(t.group).name)} · about ${(t.w / 25.4).toFixed(1)}″ × ${(t.h / 25.4).toFixed(1)}″</p>
+  const sv = sideViewOf(t), heads = t.group === 'side-view' ? headsFor(t) : [];
+  const pairRow = (x, sub) => `<button class="tpair" data-pt="${esc(x.id)}"><div class="pv">${tplArt(x, woods)}</div><div class="grow"><div class="t">${esc(x.code)} ${esc(x.name)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ''}</div><span class="chev">${ICON.chev}</span></button>`;
+  v.innerHTML = `<div class="preview bar" id="bigbox"><div class="pvart" id="big">${tplArt(t, woods)}</div><div class="pvbar"><span class="pvtag">${sizeHTML(t)}</span><span class="tools"><button class="mini" id="t3d" hidden>${ICON.cube}3D</button></span></div></div>
+    ${sv ? `<div class="tray"><div class="tray-h">Side view</div>${pairRow(sv, 'Trace it on the edge of the blank')}</div>` : ''}
+    ${heads.length ? `<div class="tray"><div class="tray-h">Goes with these heads<span class="small muted">Any handle fits</span></div>${heads.map(h => pairRow(h, (S.kinds.find(k => k.id === h.kind) || {}).name || '')).join('')}</div>` : ''}
     <div class="tray"><button class="swrow" id="prt" style="padding:4px 2px"><div class="grow"><div class="t">Printed</div><div class="s">${S.printed[id] ? 'Printed ' + esc(new Date(S.printed[id] + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })) : 'Not printed yet'}</div></div><span class="switch ${S.printed[id] ? 'on' : ''}"><i></i></span></button></div>
     ${guide ? `<div class="tray"><div class="tray-h">How to use</div>${guide.print ? `<p class="gprint"><b>Print:</b> ${esc(guide.print)}</p>` : ''}${guide.steps.length ? `<ol class="gsteps">${guide.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}${guide.tip ? `<p class="note" style="margin:8px 0 0">${esc(guide.tip)}</p>` : ''}${guide.img ? `<figure class="gfig"><img id="gimg" src="${guide.img}" alt=""><figcaption>${esc(guide.caption || '')}</figcaption></figure>` : ''}${guide.untested && !S.printed[id] ? '<p class="note" style="margin:8px 0 0">Not test-printed yet. Flip Printed on once you have.</p>' : ''}</div>` : ''}
     <div class="tray" id="stlTray" hidden><button class="swrow" id="stlGet" style="padding:4px 2px"><div class="grow"><div class="t">Download STL</div><div class="s" id="stlName"></div></div><span class="chev">${ICON.chev || '›'}</span></button></div>
@@ -2104,7 +2397,7 @@ VIEWS.template = ({ id }) => {
       <div class="seg" id="mat"><button data-pm="1" class="${t.print !== false ? 'on' : ''}">3D print</button><button data-pm="0" class="${t.print === false ? 'on' : ''}">Wood</button></div>
       <div id="tw" style="margin-top:14px"></div></div>
     <div class="sec">Used in</div>
-    <div class="card flush">${uses.length ? uses.map(p => `<button class="listrow" data-id="${p.id}"><div class="grow"><div class="t">No. ${pad(p.no)} · ${esc(typeName(p))}</div><div class="s">${esc(p.woods.map(i => woodById(i)?.name).join(', '))}</div></div>${statusChip(p.status)}</button>`).join('') : '<div class="listrow muted">Not used yet</div>'}</div>
+    <div class="card flush">${uses.length ? uses.map(p => `<button class="listrow" data-id="${p.id}"><div class="grow"><div class="t">No. ${pad(p.no)}, ${esc(typeName(p).toLowerCase())}</div><div class="s">${esc(p.woods.map(i => woodById(i)?.name).join(', '))}</div></div>${statusChip(p.status)}</button>`).join('') : '<div class="listrow muted">Not used yet</div>'}</div>
     <div style="height:30px"></div>`;
   if (t.print !== false) {
     const cols = FILAMENTS, cur = t.printColor || FIL_DEFAULT;
@@ -2115,9 +2408,12 @@ VIEWS.template = ({ id }) => {
   stlLoad().then(ix => {
     const f = ix[id] || t.stlName; if (!f || !$('#stlTray')) return; $('#stlTray').hidden = false; $('#stlName').textContent = f;
     $('#stlGet').onclick = () => ix[id] ? saveAsset('stl/' + f, f, 'model/stl') : saveStored('stl:' + id, f, 'model/stl');
+    $('#t3d').hidden = false; $('#t3d').onclick = () => openTpl3D(id);
+    $('#big').classList.add('tap'); $('#big').onclick = () => openTpl3D(id);
   });
+  $$('[data-pt]', v).forEach(b => b.onclick = () => go('template', { id: b.dataset.pt }));
   $('#prt').onclick = () => { if (S.printed[id]) delete S.printed[id]; else S.printed[id] = today(); save(); render(); };
-  $('#tname').onchange = () => { editTpl(t, { name: $('#tname').value.trim() || t.name }); setTop(`${t.code} · ${$('#tname').value.trim()}`, delBtn); bindDel(); };
+  $('#tname').onchange = () => { editTpl(t, { name: $('#tname').value.trim() || t.name }); setTop(`${t.code} ${$('#tname').value.trim()}`, delBtn); bindDel(); };
   $('#tinsp').onchange = () => editTpl(t, { inspiration: $('#tinsp').value.trim() });
   $('#tnotes').onchange = () => editTpl(t, { notes: $('#tnotes').value.trim() });
   $('#gimg')?.addEventListener('click', () => openSheet(`<img src="${guide.img}" alt="" style="width:100%;border-radius:12px;background:#fff;display:block">`));
@@ -2153,16 +2449,19 @@ VIEWS.combo = ({ type: typeId }, frame) => {
   type.slots.forEach(s => { if (!frame.sel[s.name]) frame.sel[s.name] = allTemplates().find(t => t.group === s.group)?.id; });
   const v = $('#view');
   const fake = () => ({ id: 'combo', no: 0, type: typeId, templates: frame.sel, woods: frame.woods, angle: frame.angle || 0 });
-  v.innerHTML = `<div class="preview" id="cpv"></div><div style="margin-top:10px">${modeSeg(viewMode)}</div>${angleRow(frame)}
-    ${type.slots.map((s, si) => `<label class="f">${esc(s.name)}</label><div class="filters" data-slot="${si}">${allTemplates().filter(t => t.group === s.group).map(t => `<button class="tpl" data-tp="${t.id}"><div class="pv" style="height:70px">${tplArt(t, frame.woods, undefined, true)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('')}</div>`).join('')}
+  v.innerHTML = `<div class="pvdock"><div class="preview bar" id="cpvb"><div id="cpv" style="display:grid;place-items:center"></div><div class="pvbar"><span class="pvtag"></span><span class="tools"><button class="mini" id="cMode"></button><button class="mini" id="c3d">${ICON.cube}3D</button></span></div></div></div>
+    <div class="tray"><div class="tray-h">Design</div>${type.slots.map((s, si) => `<label class="f" style="${si ? '' : 'margin-top:0'}">${esc(s.name)}</label><div class="filters" data-slot="${si}">${allTemplates().filter(t => t.group === s.group).map(t => `<button class="tpl" data-tp="${t.id}"><div class="pv" style="height:70px">${tplArt(t, frame.woods, undefined, true)}</div><div class="code">${esc(t.code)}</div><div class="tn">${esc(t.name)}</div></button>`).join('')}</div>`).join('')}
+      <div id="cang"></div></div>
     <div class="tray"><div class="tray-h">Woods</div><div id="cw"></div></div>
     <button class="btn primary wide" id="mk" style="margin-top:18px">Start a piece like this</button><div style="height:30px"></div>`;
   const draw = () => {
-    $('#cpv').innerHTML = pieceArt(fake(), viewMode) || '<span class="muted">Pick the parts below</span>';
+    $('#cpv').innerHTML = pieceArt(fake(), viewMode) || '<span class="muted small">Pick the parts below</span>';
+    $('#cMode').textContent = viewMode === 'templates' ? 'Finished' : 'Templates';
     $$('[data-slot]', v).forEach(row => { const s = type.slots[+row.dataset.slot]; $$('[data-tp]', row).forEach(b => b.classList.toggle('sel', frame.sel[s.name] === b.dataset.tp)); });
   };
-  bindMode(v, draw, 'mode', fake);
-  bindAngle(v, frame, draw);
+  $('#cMode').onclick = () => { viewMode = viewMode === 'templates' ? 'finished' : 'templates'; draw(); };
+  $('#c3d').onclick = () => open3D(fake());
+  $('#cang').innerHTML = angleRow(frame); bindAngle($('#cang'), frame, draw);
   $$('[data-slot]', v).forEach(row => { const s = type.slots[+row.dataset.slot]; $$('[data-tp]', row).forEach(b => b.onclick = () => { frame.sel[s.name] = b.dataset.tp; draw(); }); });
   woodPicker($('#cw'), frame.woods, () => { draw(); $$('.tpl[data-tp]', v).forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), frame.woods, undefined, true); }); });
   draw();
@@ -2172,7 +2471,7 @@ VIEWS.combo = ({ type: typeId }, frame) => {
 /* STL / SVG import */
 function guessGroup(code, joint) {
   const pre = (code.match(/^[A-Z]+/) || [''])[0];
-  if (pre === 'BP' || pre === 'DG') return 'shop-extras';   // blade protectors and drill guides live with the shop extras
+  if (['BP', 'DG', 'BG', 'T'].includes(pre)) return 'shop-extras';   // blade guards, protectors and drill guides live with the shop extras
   const exact = S.groups.find(g => g.prefix && g.prefix === pre); if (exact) return exact.id;
   if (pre === 'KV') return 'side-view';
   if (pre === 'KH') return 'kitchen-handle';
@@ -2302,33 +2601,32 @@ async function addSvgTemplate() {
 /* ---------- Woods ---------- */
 let woodScope = 'shop', woodQuery = '', woodSort = 'az';
 VIEWS.woods = () => {
-  setTop('Woods', `<button class="icon" id="addWood" aria-label="Add a custom wood">${ICON.plus}</button>`);
+  setTop('Woods', `<button class="icon" id="wid" aria-label="Identify a wood from a photo">${ICON.camera}</button><button class="icon" id="addWood" aria-label="Add a custom wood">${ICON.plus}</button>`);
   const v = $('#view');
   const tracked = S.shop.map(id => stockOf(id)).filter(s => s.bf != null), onHand = tracked.reduce((a, s) => a + s.bf, 0), worth = tracked.reduce((a, s) => a + (s.cost > 0 ? s.bf * s.cost : 0), 0);
   v.innerHTML = `<div class="search">${ICON.search}<input id="wsq" type="search" placeholder="Search ${allWoods().length} woods" value="${esc(woodQuery)}" autocomplete="off"></div>
-    <div class="seg" style="margin:0 0 10px"><button data-sc="shop" class="${woodScope === 'shop' ? 'on' : ''}">In my shop (${S.shop.length})</button><button data-sc="all" class="${woodScope === 'all' ? 'on' : ''}">All woods</button></div>
-    <div class="row" style="margin-bottom:12px"><div class="seg" id="wsort"><button data-so="az" class="${woodSort === 'az' ? 'on' : ''}">A–Z</button><button data-so="hard" class="${woodSort === 'hard' ? 'on' : ''}">Hardest</button></div>
-      <button class="btn small tonal" id="wid" style="flex:none">Identify from photo</button></div>
-    ${tracked.length ? `<p class="note" style="margin:0 2px 10px">${fmtBf(onHand)} bd ft on hand${worth ? `, about ${fmt$(worth)} of wood` : ''}.</p>` : ''}
+    <div class="filters"><button data-sc="shop" class="${woodScope === 'shop' ? 'on' : ''}">In my shop <b>${S.shop.length}</b></button><button data-sc="all" class="${woodScope === 'all' ? 'on' : ''}">All woods</button><button data-so="hard" class="${woodSort === 'hard' ? 'on' : ''}">Hardest first</button></div>
+    ${tracked.length ? `<div class="stats" style="margin-bottom:10px"><div class="stat"><b>${fmtBf(onHand)}</b><span>board feet on hand</span></div><div class="stat"><b>${worth ? fmt$(worth) : '—'}</b><span>of wood, at your prices</span></div></div>` : ''}
     <div class="card flush" id="wl"></div>
-    <p class="note">Only woods in your shop show in the checklist when you log a piece. Tap a wood to track how many board feet you have and what you paid.</p><div style="height:20px"></div>`;
+    <p class="note">Woods in your shop are the ones you pick from when you log a piece. Tap a wood to track how many board feet you have and what you paid.</p><div style="height:20px"></div>`;
   const draw = () => {
     const q = woodQuery.trim();
     let list = woodScope === 'shop' && !q ? shopWoods() : allWoods(), guesses = [];
     if (q) ({ hits: list, guesses } = findWoods(q));
     if (q && !list.length) list = guesses;
     if (woodSort === 'hard' && !(q && guesses.length && list === guesses)) list = [...list].sort((a, b) => (b.janka || 0) - (a.janka || 0));
-    $('#wl').innerHTML = (q && guesses.length ? '<div class="listrow small muted">Did you mean…</div>' : '') + list.map(w => `<div class="listrow"><button class="grow row" data-w="${w.id}" style="gap:12px;text-align:left">${swatch(w, 38, 11)}
+    else if (woodScope === 'shop' && !q) list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    $('#wl').innerHTML = (q && guesses.length ? '<div class="listrow small muted">Did you mean…</div>' : '') + list.map(w => `<div class="listrow" style="padding:8px 10px 8px 14px"><button class="grow row" data-w="${w.id}" style="gap:12px;text-align:left">${swatch(w, 36, 10)}
       <div class="grow" style="min-width:0"><div class="t">${esc(w.name)}</div><div class="s">${esc(woodSub(w))}</div></div></button>
-      <button class="switch ${S.shop.includes(w.id) ? 'on' : ''}" data-sw="${w.id}" aria-label="In my shop"><i></i></button></div>`).join('') + (q && !findWoods(q).hits.length ? `<button class="listrow add" id="addNewW">+ Add "${esc(q)}" as a new wood</button>` : '');
+      <button class="check ${S.shop.includes(w.id) ? 'on' : ''}" data-sw="${w.id}" aria-label="${S.shop.includes(w.id) ? 'Take out of my shop' : 'Put in my shop'}">${ICON.check}</button></div>`).join('') + (q && !findWoods(q).hits.length ? `<button class="listrow add" id="addNewW">+ Add "${esc(q)}" as a new wood</button>` : '') || '<div class="listrow muted">No woods in your shop yet. Switch to All woods and tick the ones you have.</div>';
     $('#addNewW', v)?.addEventListener('click', () => newWoodFlow(q, () => { woodQuery = ''; }));
     $$('[data-w]', v).forEach(b => b.onclick = () => go('editWood', { id: b.dataset.w }));
-    $$('[data-sw]', v).forEach(b => b.onclick = () => { const id = b.dataset.sw; if (S.shop.includes(id)) S.shop = S.shop.filter(x => x !== id); else S.shop.push(id); save(); b.classList.toggle('on'); $('[data-sc="shop"]').textContent = `In my shop (${S.shop.length})`; });
+    $$('[data-sw]', v).forEach(b => b.onclick = () => { const id = b.dataset.sw; if (S.shop.includes(id)) S.shop = S.shop.filter(x => x !== id); else S.shop.push(id); save(); b.classList.toggle('on'); haptic(8); $('[data-sc="shop"] b').textContent = S.shop.length; });
   };
   $('#wsq').oninput = () => { woodQuery = $('#wsq').value; draw(); };
-  $$('[data-so]', v).forEach(b => b.onclick = () => { woodSort = b.dataset.so; $$('[data-so]', v).forEach(x => x.classList.toggle('on', x === b)); draw(); });
-  $('#wid').onclick = () => identifyWood(null);
   $$('[data-sc]', v).forEach(b => b.onclick = () => { woodScope = b.dataset.sc; $$('[data-sc]', v).forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  $('[data-so]', v).onclick = e => { woodSort = woodSort === 'hard' ? 'az' : 'hard'; e.currentTarget.classList.toggle('on', woodSort === 'hard'); draw(); };
+  $('#wid').onclick = () => identifyWood(null);
   draw();
   longPress($('#wl'), '[data-w]', el => woodMenu(el.dataset.w));
   $('#addWood').onclick = () => newWoodFlow('', null);
@@ -2436,87 +2734,185 @@ function addBoardsSheet(onAdd) {
   draw();
 }
 
-/* ---------- Settings ---------- */
-VIEWS.settings = () => {
-  setTop('Settings');
-  const st = S.settings, v = $('#view');
-  const sold = S.pieces.filter(p => p.status === 'sold');
-  const total = sold.reduce((a, p) => a + (num$(p.price) || 0), 0);
-  const withCost = sold.map(p => ({ p, c: woodCost(p) })).filter(x => x.c && num$(x.p.price) != null);
-  const profit = withCost.reduce((a, x) => a + num$(x.p.price) - x.c.v, 0);
+/* ---------- Shop: how sales are going, and the settings ---------- */
+let shopRange = 'year';
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const ym = d => d ? d.slice(0, 7) : '';
+function salesChart(sold, months) {
+  // One bar per month, newest on the right. A thin bar grows from the baseline; tap one to read it.
+  const vals = months.map(m => sold.filter(p => ym(p.soldDate) === m).reduce((a, p) => a + (num$(p.price) || 0), 0));
+  const max = Math.max(...vals, 1), W = 340, H = 150, top = 18, base = 120, slot = W / months.length, bw = Math.min(18, slot - 6);
+  const best = vals.indexOf(Math.max(...vals)), last = vals.length - 1;
+  const bars = vals.map((v, i) => {
+    const h = v ? Math.max(4, (base - top) * v / max) : 0, x = i * slot + (slot - bw) / 2, y = base - h, r = Math.min(4, h);
+    const path = h ? `M${x},${base} V${y + r} Q${x},${y} ${x + r},${y} H${x + bw - r} Q${x + bw},${y} ${x + bw},${y + r} V${base} Z` : '';
+    const lab = v && (i === best || i === last) ? `<text x="${x + bw / 2}" y="${y - 5}" text-anchor="middle" font-size="10.5" font-weight="650" fill="var(--ink)">${fmt$(v)}</text>` : '';
+    const [yy, mm] = months[i].split('-');
+    return `<g class="cbar" data-m="${months[i]}" data-v="${v}">
+      <rect x="${i * slot}" y="0" width="${slot}" height="${H}" fill="transparent"/>${path ? `<path d="${path}" fill="var(--accent)"/>` : ''}${lab}
+      <text x="${x + bw / 2}" y="${base + 16}" text-anchor="middle" font-size="10" fill="var(--ink-2)">${MONTHS[+mm - 1].slice(0, 1)}</text>
+      ${+mm === 1 || i === 0 ? `<text x="${x + bw / 2}" y="${base + 29}" text-anchor="middle" font-size="9.5" fill="var(--ink-3)">${yy.slice(2) === String(new Date().getFullYear()).slice(2) && i !== 0 ? '' : "'" + yy.slice(2)}</text>` : ''}</g>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sales by month"><line x1="0" x2="${W}" y1="${base + .5}" y2="${base + .5}" stroke="var(--line-strong)" stroke-width="1"/>${bars}</svg>`;
+}
+function rankCard(rows, fmt) {
+  if (!rows.length) return '';
+  const max = Math.max(...rows.map(r => r[1]), 1);
+  return `<div class="card flush">${rows.map(([name, n, extra, color]) => `<div class="rank">${color ? `<span style="width:12px;height:12px;border-radius:3px;flex:none;background:${color}"></span>` : ''}<span class="nm">${esc(name)}</span><span class="meter"><i style="width:${Math.round(100 * n / max)}%"></i></span><span class="val">${fmt(n, extra)}</span></div>`).join('')}</div>`;
+}
+VIEWS.shop = () => {
+  setTop('Shop');
+  const v = $('#view'), now = new Date(), yr = String(now.getFullYear());
+  const months = Array.from({ length: 12 }, (_, i) => { const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
+  const soldAll = S.pieces.filter(p => p.status === 'sold');
+  const inRange = p => shopRange === 'all' ? true : shopRange === 'year' ? (p.soldDate || '').startsWith(yr) : ym(p.soldDate) >= months[0];
+  const sold = soldAll.filter(inRange), priced = sold.filter(p => num$(p.price) != null);
+  const total = priced.reduce((a, p) => a + num$(p.price), 0), avg = priced.length ? total / priced.length : null;
+  const withCost = priced.map(p => ({ p, c: woodCost(p) })).filter(x => x.c), profit = withCost.reduce((a, x) => a + num$(x.p.price) - x.c.v, 0);
+  const building = S.pieces.filter(p => p.status === 'building'), ready = S.pieces.filter(p => p.status === 'available');
+  const asking = ready.reduce((a, p) => a + (num$(p.price) || 0), 0);
+  const byType = {}; sold.forEach(p => { const k = typeName(p); byType[k] ||= [0, 0]; byType[k][0]++; byType[k][1] += num$(p.price) || 0; });
+  const byWood = {}; sold.forEach(p => uniqWoods(p.woods).forEach(w => { byWood[w.id] ||= 0; byWood[w.id]++; }));
+  const recent = [...soldAll].sort((a, b) => (b.soldDate || '').localeCompare(a.soldDate || '')).slice(0, 5);
+  const rangeName = { year: `in ${yr}`, '12': 'in the last 12 months', all: 'all time' }[shopRange];
+  const g = S.settings.gh;
   v.innerHTML = `
-    <div class="money" style="grid-template-columns:repeat(${withCost.length ? 4 : 3},1fr);margin-top:4px">
-      <div><b>${S.pieces.length}</b><span>logged</span></div><div><b>${sold.length}</b><span>sold</span></div><div><b>${fmt$(total)}</b><span>sales</span></div>${withCost.length ? `<div><b>${fmt$(profit)}</b><span>profit*</span></div>` : ''}</div>
-    ${withCost.length ? `<p class="note">*Profit on the ${withCost.length} sold piece${withCost.length > 1 ? 's' : ''} with a wood cost.</p>` : ''}
-    <div class="tray"><div class="tray-h">Shop logo</div>
-      ${logoSrc() ? `<div class="logocard"><img src="${esc(logoSrc())}" alt="Shop logo"></div>` : '<p class="note" style="margin-top:-6px">Add your logo and it goes on QR tags and the story page customers see.</p>'}
-      <div class="row" style="margin-top:12px"><button class="btn small" id="logoPick">${logoSrc() ? 'Change logo' : 'Add a logo'}</button>${logoSrc() ? '<button class="btn small" id="logoRm">Remove</button>' : ''}</div>
-      ${logoSrc() ? '<p class="note">On QR tags and the story page. Save the story page file again after you change it.</p>' : ''}</div>
-    <div class="tray"><div class="tray-h">You</div>
-    <label class="f" style="margin-top:0">Your name <span>(signs each story)</span></label><input id="maker" value="${esc(st.maker)}">
-    <label class="f">Shop name <span>(optional)</span></label><input id="shop" value="${esc(st.shop)}" placeholder="Leave blank to use your name">
-    <label class="f">Email <span>(printed on cards)</span></label><input id="email" type="email" inputmode="email" value="${esc(st.email || '')}" placeholder="you@example.com">
-    <p class="note" style="margin:-4px 0 10px">Starting at a higher number is fine, like 25. Pieces made before Bench aren't counted, so a story only says "the first piece with this combination" when you turn that on for the piece.</p>
-    <div class="row"><div><label class="f">${S.pieces.length ? 'Next piece number' : 'First piece number'}</label><input id="nextNo" inputmode="numeric" value="${S.pieces.length ? nextNo() : st.nextNumber}" ${S.pieces.length ? 'disabled' : ''}></div><div><label class="f">Default finish</label><select id="dfin">${S.finishes.map(f => `<option ${f.name === st.defaultFinish ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></div></div>
-    <label class="f">End of every listing</label><textarea id="lend" style="min-height:70px">${esc(st.listingEnd)}</textarea></div>
-    <div class="tray"><div class="tray-h">Story page for QR codes</div>
-      ${ghOn() ? `<p class="note" style="margin:-6px 0 10px">Connected. Pieces go online by themselves when you print a QR, and the page updates itself after app updates.</p>
+    <div class="filters">${[['year', 'This year'], ['12', 'Last 12 months'], ['all', 'All time']].map(([k, l]) => `<button data-r="${k}" class="${shopRange === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="stats">
+      <div class="stat big"><div><b>${fmt$(total)}</b><span>sales ${rangeName}</span></div><div class="side">${sold.length} sold${avg != null ? `<br>${fmt$(avg)} average` : ''}</div></div>
+      ${soldAll.length ? `<div class="stat"><b>${withCost.length ? fmt$(profit) : '—'}</b><span>${withCost.length ? `profit on ${withCost.length} with a wood cost` : 'profit, once pieces have a wood cost'}</span></div>` : ''}
+      <div class="stat"><b>${ready.length}</b><span>finished${asking ? `, ${fmt$(asking)} asking` : ''}</span></div>
+      <div class="stat"><b>${building.length}</b><span>on the bench</span></div>
+      <div class="stat"><b>${S.pieces.length}</b><span>pieces logged</span></div>
+    </div>
+    ${soldAll.some(p => ym(p.soldDate) >= months[0]) ? `<div class="chart"><div class="ttl">Sales by month <span id="cpick">Tap a month</span></div>${salesChart(soldAll, months)}</div>` : ''}
+    ${sold.length ? `<div class="sec">What sells</div>${rankCard(Object.entries(byType).sort((a, b) => b[1][0] - a[1][0]).map(([k, [n, $]]) => [k, n, $]), (n, $) => `${n} sold${$ ? `, ${fmt$($)}` : ''}`)}
+      <div class="sec">Woods in sold pieces</div>${rankCard(Object.entries(byWood).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id, n]) => [woodName(id), n, 0, (woodById(id) || {}).color]), n => `${n} piece${n > 1 ? 's' : ''}`)}` : `<p class="note" style="margin-top:14px">Mark a piece sold and add its price, and the numbers here fill in.</p>`}
+    ${recent.length ? `<div class="sec">Recent sales</div><div class="card flush">${recent.map(p => `<button class="listrow" data-id="${p.id}"><div class="grow"><div class="t"><span class="serial">No. ${pad(p.no)}</span> <span style="font-weight:450">${esc(typeName(p))}</span></div><div class="s">${esc([p.soldTo, p.soldDate ? new Date(p.soldDate + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''].filter(Boolean).join(', '))}</div></div><b>${num$(p.price) != null ? fmt$(num$(p.price)) : ''}</b></button>`).join('')}</div>` : ''}
+    <div class="group-h">Settings</div>
+    <div class="card flush">
+      ${[['setProfile', ICON.user, 'You and your shop', [S.settings.shop || S.settings.maker, S.settings.email].filter(Boolean).join(', ')],
+        ['setStory', ICON.globe, 'Story page and QR codes', ghOn() ? (S.settings.pageUrl || '').replace(/^https:\/\//, '') : S.settings.pageUrl ? 'Your own web address' : 'Not set up yet'],
+        ['setListing', ICON.tag, 'Listings', 'What every listing ends with'],
+        ['setTypes', ICON.shapes, 'Item types', `${S.types.length} types, ${S.kinds.length} kitchen tool kinds`],
+        ['setFinishes', ICON.drop, 'Finishes', S.finishes.map(f => f.name).join(', ')],
+        ['setLook', ICON.sun, 'Look', { auto: 'Match phone', light: 'Light', dark: 'Dark' }[S.settings.theme || 'auto']],
+        ['setBackup', ICON.save, 'Backup and computer', S.settings.lastBackup ? `Last backup ${new Date(S.settings.lastBackup).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'No backup yet']
+      ].map(([view, ic, t, s]) => `<button class="link" data-go="${view}"><span class="ic">${ic}</span><div class="grow"><div class="t">${t}</div><div class="s">${esc(s || '')}</div></div>${ICON.chev}</button>`).join('')}
+    </div>
+    <p class="note center" style="margin-top:26px">Bench ${APP_VERSION}</p><div style="height:20px"></div>`;
+  $$('[data-r]', v).forEach(b => b.onclick = () => { shopRange = b.dataset.r; render(); });
+  $$('[data-id]', v).forEach(b => b.onclick = () => go('piece', { id: b.dataset.id }));
+  $$('[data-go]', v).forEach(b => b.onclick = () => go(b.dataset.go));
+  $$('.cbar', v).forEach(bar => bar.onclick = () => {
+    const [y, m] = bar.dataset.m.split('-'), n = soldAll.filter(p => ym(p.soldDate) === bar.dataset.m).length;
+    $('#cpick').textContent = `${MONTHS[+m - 1]} ${y}: ${fmt$(+bar.dataset.v)}${n ? `, ${n} sold` : ''}`;
+    $$('.cbar path', v).forEach(x => x.style.opacity = x.closest('.cbar') === bar ? 1 : .45);
+  });
+};
+// Settings pages, one subject each
+VIEWS.setProfile = () => {
+  setTop('You and your shop');
+  const st = S.settings, v = $('#view');
+  v.innerHTML = `
+    <div class="tray" style="margin-top:4px"><div class="tray-h">Shop logo</div>
+      ${logoSrc() ? `<div class="logocard"><img src="${esc(logoSrc())}" alt="Shop logo"></div>` : '<p class="note" style="margin-top:-6px">Add your logo and it goes on QR tags, cards and the story page customers see.</p>'}
+      <div class="row" style="margin-top:12px"><button class="btn small" id="logoPick">${logoSrc() ? 'Change logo' : 'Add a logo'}</button>${logoSrc() ? '<button class="btn small" id="logoRm">Remove</button>' : ''}</div></div>
+    <div class="tray"><label class="f" style="margin-top:0">Your name <span>Signs each story</span></label><input id="maker" value="${esc(st.maker)}">
+      <label class="f">Shop name</label><input id="shop" value="${esc(st.shop)}" placeholder="Leave blank to use your name">
+      <label class="f">Email <span>On cards and the story page's contact button</span></label><input id="email" type="email" inputmode="email" value="${esc(st.email || '')}" placeholder="you@example.com">
+      <div class="row"><div><label class="f">${S.pieces.length ? 'Next piece number' : 'First piece number'}</label><input id="nextNo" inputmode="numeric" value="${S.pieces.length ? nextNo() : st.nextNumber}" ${S.pieces.length ? 'disabled' : ''}></div><div><label class="f">Usual finish</label><select id="dfin">${S.finishes.map(f => `<option ${f.name === st.defaultFinish ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></div></div>
+      <p class="note">New pieces take the number after your highest one, so deleting a test piece gives its number back.</p></div>`;
+  const bind = (sel, key, num) => $(sel).onchange = () => { st[key] = num ? (parseInt($(sel).value) || st[key]) : $(sel).value.trim(); save(); autoPublish(5000); };
+  bind('#email', 'email'); bind('#maker', 'maker'); bind('#shop', 'shop'); bind('#nextNo', 'nextNumber', true); bind('#dfin', 'defaultFinish');
+  $('#logoPick').onclick = async () => { const [f] = await pickFiles('image/*'); if (!f) return; try { st.logo = await logoFromFile(f); save(); autoPublish(3000); render(); toast('Logo saved'); } catch (e) { toast('Could not find a logo in that picture'); } };
+  $('#logoRm')?.addEventListener('click', () => { const was = st.logo; st.logo = ''; save(); render(); toast('Logo removed', { action: 'Undo', onAction: () => { st.logo = was; save(); render(); } }); });
+};
+VIEWS.setStory = () => {
+  setTop('Story page and QR codes');
+  const st = S.settings, v = $('#view');
+  v.innerHTML = ghOn() ? `
+    <div class="tray" style="margin-top:4px"><div class="tray-h">Your story page</div>
+      <p class="note" style="margin:-6px 0 10px">Connected. Each piece goes online by itself, and the page updates itself after app updates.</p>
       <div class="pagechip">${esc(st.pageUrl.replace(/^https:\/\//, ''))}</div>
       <p class="note" id="gsVer" style="margin:10px 0 0">Page on your site: version ${esc((st.gh.pageVer || '').split(':')[0] || 'not uploaded yet')}. This app is ${esc(APP_VERSION)}.</p>
-      <div class="row" style="margin-top:12px"><button class="btn small" id="gsOpen">Open page</button><button class="btn small" id="gsUpd">Update page now</button><button class="btn small" id="gsOff">Disconnect</button></div>`
-      : `<p class="note" style="margin:-6px 0 10px">QR codes open a page with the piece and its story. Set it up once and Bench takes care of it from then on.</p>
+      <div class="row" style="margin-top:12px"><button class="btn small" id="gsOpen">Open page</button><button class="btn small" id="gsUpd">Update now</button></div></div>
+    <button class="btn wide danger" id="gsOff" style="margin-top:20px">Disconnect the story page</button>`
+    : `<div class="tray" style="margin-top:4px"><div class="tray-h">Set up your story page</div>
+      <p class="note" style="margin:-6px 0 12px">QR codes open a page with the piece and its story. Set it up once and Bench takes care of it from then on.</p>
       <button class="btn primary wide" id="gsSet">Set up story page</button>
       <details class="adv"><summary>Use my own web address instead</summary>
       <p class="note">The piece details ride inside the QR link, so the codes are busier. Upload the file yourself, and again after app updates.</p>
       <label class="f">Page address</label><input id="purl" value="${esc(st.pageUrl)}" placeholder="https://…" inputmode="url">
-      <button class="btn wide" id="getPage" style="margin-top:12px">Save the story page file</button></details>`}</div>
-    ${ghOn() ? `<div class="tray"><div class="tray-h">Use on your computer</div>
-      <p class="note" style="margin:-6px 0 10px">The same pieces on your phone and your computer, kept in step by themselves. Open the link once on the computer and it signs in on its own.</p>
+      <button class="btn wide" id="getPage" style="margin-top:12px">Save the story page file</button></details></div>`;
+  $('#gsSet')?.addEventListener('click', () => pageSetupSheet(() => render()));
+  $('#purl')?.addEventListener('change', () => { st.pageUrl = $('#purl').value.trim(); save(); });
+  $('#gsOpen')?.addEventListener('click', () => openUrl(st.pageUrl));
+  $('#gsUpd')?.addEventListener('click', async () => {
+    st.gh.pageVer = ''; toast('Updating the page…');
+    try { await publishPieces(S.pieces.filter(p => p.pubId && p.pubHash !== pubHash(p))); toast('Updated. Give it a minute or two, then close the page and open it again.'); render(); }
+    catch (e) { toast(e.status === 401 ? 'The GitHub code stopped working. Disconnect and set it up again.' : 'Couldn’t update (no internet?). Try again later.'); }
+  });
+  $('#gsOff')?.addEventListener('click', () => confirmSheet('Disconnect the story page?', 'Disconnect', () => { const was = st.gh, url = st.pageUrl; st.gh = null; st.pageUrl = ''; save(); render(); toast('Disconnected', { action: 'Undo', onAction: () => { st.gh = was; st.pageUrl = url; save(); render(); } }); }, 'QR codes you already printed keep working. New ones use long links until you set it up again.'));
+  $('#getPage')?.addEventListener('click', async () => { saveFile(await storyPageHtml(), 'index.html', 'text/html'); });
+};
+VIEWS.setListing = () => {
+  setTop('Listings');
+  const st = S.settings, v = $('#view');
+  v.innerHTML = `<div class="tray" style="margin-top:4px"><label class="f" style="margin-top:0">End of every listing</label><textarea id="lend" style="min-height:90px">${esc(st.listingEnd)}</textarea>
+    <label class="f">Pickup area <span>Shown in the Marketplace helper so you can paste it</span></label><input id="larea" value="${esc(st.area || '')}" placeholder="Ione, CA">
+    <p class="note">Listings are written from each piece's details. Open a piece and tap Listing to copy it into Facebook Marketplace.</p></div>`;
+  $('#lend').onchange = () => { st.listingEnd = $('#lend').value.trim(); save(); };
+  $('#larea').onchange = () => { st.area = $('#larea').value.trim(); save(); };
+};
+VIEWS.setTypes = () => {
+  setTop('Item types');
+  const v = $('#view');
+  v.innerHTML = `<div class="card flush" style="margin-top:4px">${S.types.map(t => `<button class="listrow" data-type="${t.id}"><div class="grow"><div class="t">${esc(t.name)}</div><div class="s">${t.board ? 'Board designer and cut list' : t.bowl ? 'Bowl designer and cut list' : t.slots.length ? esc(t.slots.map(s => s.name).join(' + ')) : 'No templates'}${t.join === 'dovetail' ? ', dovetailed' : ''}</div></div>${ICON.chev}</button>`).join('')}
+      <button class="listrow add" id="addType">+ Add an item type</button></div>
+    <div class="sec">Kitchen tool kinds <span class="small muted">named by the head you pick</span></div>
+    <div class="card flush">${S.kinds.map((k, i) => `<button class="listrow" data-kind="${i}"><div class="grow"><div class="t">${esc(k.name)}</div><div class="s">${esc(k.care)}</div></div>${ICON.chev}</button>`).join('')}
+      <button class="listrow add" id="addKind">+ Add a kind</button></div><div style="height:20px"></div>`;
+  $$('[data-type]', v).forEach(b => b.onclick = () => go('editType', { id: b.dataset.type }));
+  $('#addType').onclick = () => go('editType', {});
+  $$('[data-kind]', v).forEach(b => b.onclick = () => kindSheet(+b.dataset.kind));
+  $('#addKind').onclick = () => newKindSheet(() => render());
+};
+VIEWS.setFinishes = () => {
+  setTop('Finishes');
+  const v = $('#view');
+  v.innerHTML = `<div class="card flush" style="margin-top:4px">${S.finishes.map((f, i) => `<button class="listrow" data-fin="${i}"><div class="grow"><div class="t">${esc(f.name)}</div><div class="s">${esc(f.story || 'Nothing in the story')}</div></div>${ICON.chev}</button>`).join('')}
+    <button class="listrow add" id="addFin">+ Add a finish</button></div><p class="note">The line under each finish goes into the story of every piece finished with it.</p>`;
+  $$('[data-fin]', v).forEach(b => b.onclick = () => finishSheet(+b.dataset.fin));
+  $('#addFin').onclick = () => finishSheet(-1);
+};
+VIEWS.setLook = () => {
+  setTop('Look');
+  const st = S.settings, v = $('#view'), cur = st.theme || 'auto';
+  v.innerHTML = `<div class="tray" style="margin-top:4px"><div class="tray-h">Light or dark</div>
+      <div class="seg" id="thm">${[['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-th="${k}" class="${cur === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <p class="note">Match phone follows your phone's dark mode setting.</p></div>
+    <div class="tray"><button class="swrow" id="grainTog" style="padding:2px"><div class="grow"><div class="t">Wood grain in drawings</div><div class="s">Turn off to make long lists draw faster</div></div><span class="switch ${GR.on ? 'on' : ''}"><i></i></span></button></div>`;
+  $$('[data-th]', v).forEach(b => b.onclick = () => { st.theme = b.dataset.th; save(); applyTheme(); render(); });
+  $('#grainTog').onclick = () => { GR.on = !GR.on; st.grain = GR.on; save(); render(); };
+};
+VIEWS.setBackup = () => {
+  setTop('Backup and computer');
+  const st = S.settings, v = $('#view');
+  v.innerHTML = `<div class="tray" style="margin-top:4px"><div class="tray-h">Backup</div>
+      <p class="note" style="margin:-6px 0 12px">A backup is one file with every piece, project, template file and photo. It goes to your Downloads folder. Keep a copy somewhere safe, like Google Drive.</p>
+      <div class="row"><button class="btn primary" id="bk">Back up now</button><button class="btn" id="rs">Restore</button></div>
+      ${st.lastBackup ? `<p class="note">Last backup ${new Date(st.lastBackup).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}.</p>` : ''}</div>
+    ${ghOn() ? `<div class="tray"><div class="tray-h">Your computer</div><p class="note" style="margin:-6px 0 10px">Bench keeps your phone and computer in step through your private GitHub. Open the link once on the computer.</p>
       <div class="row">${bridge ? '<button class="btn small" id="cpSend">Send link to myself</button>' : ''}<button class="btn small" id="cpCopy">Copy link</button></div>
-      <p class="note" id="syStat" style="margin-top:12px"></p><button class="btn small" id="syNow">Sync now</button>
-      <p class="note">Keep that link to yourself. Anyone who has it can open your pieces.</p></div>` : ''}
-    <div class="sec">Item types</div>
-    <div class="card flush">${S.types.map(t => `<button class="listrow" data-type="${t.id}"><div class="grow"><div class="t">${esc(t.name)}</div><div class="s">${t.board ? 'Board designer + cut list' : t.bowl ? 'Bowl designer + cut list' : t.slots.length ? esc(t.slots.map(s => s.name).join(' + ')) : 'No templates'}${t.join === 'dovetail' ? ' · dovetail' : ''}</div></div></button>`).join('')}
-      <button class="listrow add" id="addType">+ Add item type</button></div>
-    <div class="sec">Head kinds</div>
-    <div class="card flush">${S.kinds.map((k, i) => `<button class="listrow" data-kind="${i}"><div class="grow"><div class="t">${esc(k.name)}</div><div class="s">${esc(k.care)}</div></div></button>`).join('')}
-      <button class="listrow add" id="addKind">+ Add head kind</button></div>
-    <div class="sec">Finishes</div>
-    <div class="card flush">${S.finishes.map((f, i) => `<button class="listrow" data-fin="${i}"><div class="grow"><div class="t">${esc(f.name)}</div><div class="s">${esc(f.story || 'No story line')}</div></div></button>`).join('')}
-      <button class="listrow add" id="addFin">+ Add finish</button></div>
-    <div class="tray"><div class="tray-h">Look</div>
-      <button class="swrow" id="grainTog" style="padding:4px 2px"><div class="grow"><div class="t">Wood grain in drawings</div><div class="s">Turn off to make big lists draw faster</div></div><span class="switch ${GR.on ? 'on' : ''}"><i></i></span></button></div>
-    <div class="tray"><div class="tray-h">Backup</div>
-    <div class="row"><button class="btn" id="bk">Back up</button><button class="btn" id="rs">Restore</button></div>
-    <p class="note">Backups go to your Downloads folder and include all photos. Keep one somewhere safe, like Google Drive.</p></div>
-    <p class="note center" style="margin-top:30px">Bench ${APP_VERSION}</p><div style="height:20px"></div>`;
-  const bind = (sel, key, num) => $(sel).onchange = () => { st[key] = num ? (parseInt($(sel).value) || st[key]) : $(sel).value.trim(); save(); };
-  bind('#email', 'email'); bind('#maker', 'maker'); bind('#shop', 'shop'); bind('#nextNo', 'nextNumber', true); bind('#dfin', 'defaultFinish'); bind('#lend', 'listingEnd'); if ($('#purl')) bind('#purl', 'pageUrl');
-  $('#gsSet')?.addEventListener('click', () => pageSetupSheet());
+      <p class="note" id="syStat" style="margin-top:12px"></p><button class="btn small" id="syNow">Sync now</button></div>` : ''}`;
+  $('#bk').onclick = async () => { await backup(); render(); }; $('#rs').onclick = restore;
   if (ghOn()) {
     syShow();
     $('#cpSend')?.addEventListener('click', () => bridge.shareText(computerLink(), 'Bench on my computer'));
     $('#cpCopy')?.addEventListener('click', async () => { try { bridge ? bridge.copyText(computerLink()) : await navigator.clipboard.writeText(computerLink()); toast('Link copied'); } catch (e) { toast('Could not copy'); } });
     $('#syNow')?.addEventListener('click', async () => { $('#syStat').textContent = 'Syncing…'; await syncNow(); syShow(); });
   }
-  $('#gsOpen')?.addEventListener('click', () => openUrl(st.pageUrl));
-  $('#gsUpd')?.addEventListener('click', async () => {
-    st.gh.pageVer = ''; toast('Updating the page…');
-    try { await publishPieces(S.pieces.filter(p => p.pubId && p.pubHash !== pubHash(p))); toast('Updated. It can take a minute or two to show up. Then close the page and open it again.'); render(); }
-    catch (e) { toast(e.status === 401 ? 'GitHub code stopped working. Reconnect below.' : 'Couldn’t update (no internet?). Try again later.'); }
-  });
-  $('#gsOff')?.addEventListener('click', () => { const was = st.gh, url = st.pageUrl; st.gh = null; st.pageUrl = ''; save(); render(); toast('Disconnected', { action: 'Undo', onAction: () => { st.gh = was; st.pageUrl = url; save(); render(); } }); });
-  if ($('#getPage')) $('#getPage').onclick = async () => { const logo = await logoDataUrl(); let html = await (await fetch('story.html')).text(); if (logo) html = html.replace('<head>', `<head><script>window.SHOP_LOGO=${JSON.stringify(logo)}</script>`); saveFile(html, 'index.html', 'text/html'); };
-  $$('[data-type]', v).forEach(b => b.onclick = () => go('editType', { id: b.dataset.type }));
-  $('#addType').onclick = () => go('editType', {});
-  $$('[data-kind]', v).forEach(b => b.onclick = () => kindSheet(+b.dataset.kind));
-  $('#addKind').onclick = () => newKindSheet(() => render());
-  $$('[data-fin]', v).forEach(b => b.onclick = () => finishSheet(+b.dataset.fin));
-  $('#addFin').onclick = () => finishSheet(-1);
-  $('#logoPick').onclick = async () => { const [f] = await pickFiles('image/*'); if (!f) return; try { st.logo = await logoFromFile(f); save(); render(); toast('Logo saved'); } catch (e) { toast('Could not find a logo in that picture'); } };
-  $('#logoRm')?.addEventListener('click', () => { const was = st.logo; st.logo = ''; save(); render(); toast('Logo removed', { action: 'Undo', onAction: () => { st.logo = was; save(); render(); } }); });
-  $('#grainTog').onclick = () => { GR.on = !GR.on; S.settings.grain = GR.on; save(); render(); };
-  $('#bk').onclick = backup; $('#rs').onclick = restore;
 };
 function kindSheet(i) {
   const k = S.kinds[i];
@@ -2579,9 +2975,16 @@ VIEWS.editType = ({ id }, frame) => {
 
 /* ---------- Backup ---------- */
 async function backup() {
+  // Every photo the app keeps (pieces, progress shots, projects) and every template file you imported
+  const ids = new Set();
+  S.pieces.forEach(p => [...(p.photos || []), ...(p.buildPhotos || []).map(b => b.id)].forEach(id => ids.add(id)));
+  (S.projects || []).forEach(q => (q.photos || []).forEach(id => ids.add(id)));
+  S.templates.forEach(t => ids.add('stl:' + t.id));
   const photos = {};
-  for (const p of S.pieces) for (const id of [...(p.photos || []), ...(p.buildPhotos || []).map(b => b.id)]) { const d = await photoGet(id); if (d) photos[id] = d; }
-  saveFile(JSON.stringify({ app: 'bench', version: 2, saved: new Date().toISOString(), state: S, photos }), `bench-backup-${today()}.json`, 'application/json');
+  for (const id of ids) { const d = await photoGet(id); if (d) photos[id] = d; }
+  const state = clone(S); if (state.settings.gh) state.settings.gh = { ...state.settings.gh };
+  saveFile(JSON.stringify({ app: 'bench', version: 3, saved: new Date().toISOString(), state, photos }), `bench-backup-${today()}.json`, 'application/json');
+  S.settings.lastBackup = Date.now(); save();
 }
 async function restore() {
   const [f] = await pickFiles('application/json,.json'); if (!f) return;
@@ -2598,6 +3001,7 @@ $('#backBtn').onclick = () => back();
 $$('#tabs button').forEach(b => b.onclick = () => { if (b.dataset.tab === tab && stack.length === 1) return scrollTo({ top: 0, behavior: 'smooth' }); switchTab(b.dataset.tab); });
 $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
 load();
+applyTheme();
 switchTab('pieces');
 // After an app update, quietly refresh the online story page so new pieces draw right
 if (ghOn()) setTimeout(() => autoPublish(), 5000);

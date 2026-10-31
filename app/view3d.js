@@ -169,12 +169,29 @@ const V3 = (() => {
     return { group, size: new THREE.Vector3(Math.hypot(L, W) * .92, W * .62 + T, T) };
   }
 
+  // A template's STL as it prints: the plate in its filament color, lying flat on a slow turntable
+  function stl(buf, color) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(G.parseSTL(buf), 3));
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox, c = bb.getCenter(new THREE.Vector3()), dims = bb.getSize(new THREE.Vector3());
+    geo.translate(-c.x, -c.y, -c.z);
+    geo.computeVertexNormals();   // every triangle keeps its own normal, so engraving and edges stay crisp
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color).convertSRGBToLinear(), roughness: 0.55, metalness: 0, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    const holder = new THREE.Group(); holder.add(mesh); holder.rotation.x = -Math.PI / 2;   // the print bed is the floor
+    const group = new THREE.Group(); group.add(holder);
+    const diag = Math.hypot(dims.x, dims.y);
+    return { group, size: new THREE.Vector3(diag * 0.94, diag * 0.62 + dims.z, dims.z), dims };
+  }
+  const freeTree = o => o.traverse(x => { x.geometry?.dispose(); [].concat(x.material || []).forEach(m => { m.map?.dispose?.(); m.dispose?.(); }); });
+
   function open(asm, cols, title, opts = {}) {
     close();
     if (typeof THREE === 'undefined') return;
     const ov = document.createElement('div'); ov.className = 'v3';
-    ov.innerHTML = `<div class="v3top"><div class="v3t">${title || ''}</div><button class="v3x" aria-label="Close">✕</button></div>
-      <canvas></canvas><div class="v3hint">Drag to turn it · pinch to zoom · double-tap to reset</div>`;
+    ov.innerHTML = `<div class="v3top"><div class="v3h"><div class="v3t"></div><div class="v3s" hidden></div></div><button class="v3x" aria-label="Close">✕</button></div>
+      <canvas></canvas><div class="v3nav" hidden><button class="v3p" aria-label="Previous"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button><span class="v3n"></span><button class="v3q" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></div><div class="v3hint">Drag to turn it · pinch to zoom · double-tap to reset</div>`;
     document.body.appendChild(ov);
     const canvas = ov.querySelector('canvas');
     let renderer;
@@ -187,21 +204,39 @@ const V3 = (() => {
     scene.add(new THREE.HemisphereLight(0xfff4e6, 0x26221e, 0.75));
     const key = new THREE.DirectionalLight(0xffffff, 0.8); key.position.set(-1, 1.4, 2); scene.add(key);
     const rim = new THREE.DirectionalLight(0xffe0c0, 0.35); rim.position.set(1.5, -0.6, -1.5); scene.add(rim);
-    const { group, size } = typeof asm === 'function' ? asm() : build(asm, cols, opts.angle || 0);
-    const pivot = new THREE.Group(); pivot.add(group); scene.add(pivot);
+    const pivot = new THREE.Group(); scene.add(pivot);
+    let group = null, size = new THREE.Vector3(1, 1, 1);
+    const r0 = [0.25, -0.5]; let rotY = r0[1], rotX = r0[0], zoom = 1, auto = true;
+    // Put a model on the stand. Paging through templates swaps the model and keeps the same 3D view open.
+    const set = (asm, cols, title, o = {}) => {
+      if (group) { pivot.remove(group); freeTree(group); }
+      ({ group, size } = typeof asm === 'function' ? asm() : build(asm, cols, o.angle || 0));
+      pivot.add(group);
+      r0[0] = o.rotX ?? 0.25; r0[1] = o.rotY ?? -0.5; rotX = r0[0]; rotY = r0[1]; zoom = 1; auto = true;
+      ov.querySelector('.v3t').innerHTML = title || '';
+      const sub = ov.querySelector('.v3s'); sub.innerHTML = o.sub || ''; sub.hidden = !o.sub;
+      ov.classList.toggle('light', !!o.light);
+      const nav = ov.querySelector('.v3nav'), n = o.nav; nav.hidden = !n || n.count < 2;
+      if (n) {
+        ov.querySelector('.v3n').textContent = `${n.at + 1} of ${n.count}`;
+        const p = ov.querySelector('.v3p'), q = ov.querySelector('.v3q');
+        p.disabled = n.at <= 0; q.disabled = n.at >= n.count - 1;
+        p.onclick = () => n.go(-1); q.onclick = () => n.go(1);
+      }
+    };
+    set(asm, cols, title, opts);
     const fitDist = () => { const aspect = canvas.clientWidth / canvas.clientHeight; const r = Math.max(size.x / aspect, size.y) * 0.56; return r / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)); };
-    const r0 = [opts.rotX ?? 0.25, opts.rotY ?? -0.5]; let rotY = r0[1], rotX = r0[0], zoom = 1, auto = true;
     const resize = () => { const w = canvas.clientWidth, h = canvas.clientHeight; renderer.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); };
     resize();
     const pts = new Map(); let last = null, pinch0 = 0, tapT = 0;
     canvas.onpointerdown = e => { canvas.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); auto = false; last = [e.clientX, e.clientY]; if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = Math.hypot(a[0] - b[0], a[1] - b[1]) / zoom; } const now = Date.now(); if (now - tapT < 300) { rotX = r0[0]; rotY = r0[1]; zoom = 1; } tapT = now; };
     canvas.onpointermove = e => {
       if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.clientX, e.clientY]);
-      if (pts.size === 2) { const [a, b] = [...pts.values()]; zoom = Math.min(3, Math.max(0.5, Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch0)); return; }
+      if (pts.size === 2) { const [a, b] = [...pts.values()]; zoom = Math.min(4, Math.max(0.5, Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch0)); return; }
       rotY += (e.clientX - last[0]) * 0.01; rotX = Math.max(-1.4, Math.min(1.4, rotX + (e.clientY - last[1]) * 0.01)); last = [e.clientX, e.clientY];
     };
     canvas.onpointerup = canvas.onpointercancel = e => { pts.delete(e.pointerId); if (pts.size === 1) last = [...pts.values()][0]; };
-    canvas.onwheel = e => { zoom = Math.min(3, Math.max(0.5, zoom * (e.deltaY > 0 ? 0.92 : 1.08))); e.preventDefault(); };
+    canvas.onwheel = e => { zoom = Math.min(4, Math.max(0.5, zoom * (e.deltaY > 0 ? 0.92 : 1.08))); e.preventDefault(); };
     let raf;
     const loop = () => {
       if (auto) rotY += 0.006;
@@ -212,8 +247,10 @@ const V3 = (() => {
     loop();
     window.addEventListener('resize', resize);
     ov.querySelector('.v3x').onclick = close;
-    live = { ov, renderer, stop: () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize); scene.traverse(o => { o.geometry?.dispose(); [].concat(o.material || []).forEach(m => { m.map?.dispose?.(); m.dispose?.(); }); }); renderer.dispose(); } };
+    live = { ov, renderer, set, stop: () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize); freeTree(scene); renderer.dispose(); } };
   }
+  // Swap the model in the open 3D view (false when nothing is open)
+  function swap(asm, cols, title, opts) { if (!live || !live.set) return false; live.set(asm, cols, title, opts); return true; }
   function close() { if (!live) return false; live.stop(); live.ov.remove(); live = null; return true; }
-  return { open, close, board, isOpen: () => !!live };
+  return { open, close, swap, board, stl, isOpen: () => !!live };
 })();
