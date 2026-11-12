@@ -315,6 +315,9 @@ const DEFAULT_SETTINGS = {
 // clear of the wording the piece before it used, so stories read differently from one piece to the next.
 // Placeholders: {no} {noun} {made} {when} {woods} {n} {N} {wood} {Wood} {tone} ...
 const PHRASES = {
+  pureBoth: ['No stains, no dyes: every color in it is the wood’s own, and the finish is 100% food safe.', 'Nothing here is stained or dyed. The colors are the natural colors of the wood, under a finish that is 100% food safe.', 'Every color you see grew that way. There are no stains or dyes in it, and nothing on it that isn’t food safe.', 'It is all natural: no stains, no dyes, and a finish that is 100% food safe.'],
+  pureWood: ['No stains, no dyes: every color in it is the wood’s own.', 'Nothing here is stained or dyed. The colors are the natural colors of the wood.', 'Every color you see grew that way, with no stains or dyes.'],
+  pureFood: ['The finish is 100% food safe.', 'Everything on it is 100% food safe.'],
   open: [
     'No. {no} is {a} {noun} {made}{when}.',
     'This {noun} is No. {no}, {made}{when}.',

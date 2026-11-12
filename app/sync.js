@@ -42,13 +42,17 @@ async function syEnsure() {
   save();
 }
 
+// The newest commit in the data repo. Reading files at that exact commit skips GitHub's cached copies.
+async function syHead() { const g = S.settings.gh; const r = await gh(`${syRepo()}/git/ref/heads/${g.dataBranch || 'main'}`); return r && r.object && r.object.sha; }
 async function syFetch() {
   const g = S.settings.gh;
   try {
-    const r = await gh(`${syRepo()}/contents/state.json`);
+    const head = await syHead().catch(() => null); SY.head = head || SY.head;
+    const at = head ? `?ref=${head}` : '';
+    const r = await gh(`${syRepo()}/contents/state.json${at}`);
     let text;
     if (r.content && r.encoding === 'base64') text = new TextDecoder().decode(Uint8Array.from(atob(r.content.replace(/\s/g, '')), c => c.charCodeAt(0)));
-    else { const raw = await fetch(`https://api.github.com${syRepo()}/contents/state.json`, { headers: { Authorization: 'Bearer ' + g.token, Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' }); text = await raw.text(); }
+    else { const raw = await fetch(`https://api.github.com${syRepo()}/contents/state.json${at}`, { headers: { Authorization: 'Bearer ' + g.token, Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' }); text = await raw.text(); }
     return { doc: JSON.parse(text), sha: r.sha };
   } catch (e) { if (e.status === 404) return null; throw e; }
 }
@@ -103,7 +107,7 @@ function syApply() {
 async function syPut(sha) {
   const body = { message: 'Sync ' + new Date().toISOString().slice(0, 16).replace('T', ' '), content: syUtf8b64(JSON.stringify(syBuild())), branch: S.settings.gh.dataBranch || 'main' };
   if (sha) body.sha = sha;
-  await gh(`${syRepo()}/contents/state.json`, { method: 'PUT', body, timeout: 60000 });
+  const r = await gh(`${syRepo()}/contents/state.json`, { method: 'PUT', body, timeout: 60000 }); if (r && r.commit) SY.head = r.commit.sha;
 }
 
 async function syPhotos() {
@@ -111,7 +115,7 @@ async function syPhotos() {
   (S.projects || []).forEach(q => (q.photos || []).forEach(i => ids.add(i)));
   if (!ids.size) return false;
   const remote = new Set();
-  try { (await gh(`${syRepo()}/contents/photos`)).forEach(f => remote.add(f.name)); } catch (e) { if (e.status !== 404) throw e; }
+  try { (await gh(`${syRepo()}/contents/photos${SY.head ? '?ref=' + SY.head : ''}`)).forEach(f => remote.add(f.name)); } catch (e) { if (e.status !== 404) throw e; }
   let moved = 0, got = false; const g = S.settings.gh;
   for (const id of ids) {
     if (moved >= 12) { SY.more = true; break; }
@@ -175,3 +179,9 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && gh
 window.addEventListener('online', () => syQueue(500));
 if (!syLoginFromLink() && ghOn()) setTimeout(syncNow, 2500);
 setInterval(syShow, 30000);
+// Live: while Bench is open on the screen, look for changes from the other device every 20 seconds.
+// It asks only for the latest commit id, so it costs next to nothing when nothing changed.
+setInterval(async () => {
+  if (document.hidden || !ghOn() || syBusy || !S.settings.gh.data) return;
+  try { const h = await syHead(); if (h && h !== SY.head) syncNow(); } catch (e) {}
+}, 20000);

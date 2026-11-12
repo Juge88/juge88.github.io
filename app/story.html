@@ -42,6 +42,16 @@
   .more summary::after { content: "+"; font-size: 22px; line-height: 1; font-weight: 500; }
   .more[open] summary::after { content: "–"; }
   .more p { margin: 0; padding: 0 16px 14px; font-size: 17px; }
+  .hero { margin: 26px 0 0; border-radius: 20px; overflow: hidden; background: var(--well); }
+  .hero img { display: block; width: 100%; max-height: 520px; object-fit: cover; cursor: zoom-in; }
+  .hero + .art { margin-top: 10px; }
+  .pure { margin: 0 0 1.2em; padding: 6px 16px; border-radius: 14px; background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+  .pure div { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; }
+  .pure div + div { border-top: 1px solid var(--line); }
+  .pure svg { flex: none; width: 24px; height: 24px; margin-top: 1px; }
+  .pure b { display: block; font-weight: 680; font-size: 16px; color: var(--ink); }
+  .pure span { display: block; font-size: 14.5px; line-height: 1.4; color: var(--dim); margin-top: 1px; }
+  .more .grid { padding: 0 14px 16px; }
   .made { margin: 6px 0 1.6em; }
   .made h2 { font-weight: 680; font-size: 18px; margin: 0 0 12px; }
   .made .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -1721,6 +1731,9 @@ const DEFAULT_SETTINGS = {
 // clear of the wording the piece before it used, so stories read differently from one piece to the next.
 // Placeholders: {no} {noun} {made} {when} {woods} {n} {N} {wood} {Wood} {tone} ...
 const PHRASES = {
+  pureBoth: ['No stains, no dyes: every color in it is the wood’s own, and the finish is 100% food safe.', 'Nothing here is stained or dyed. The colors are the natural colors of the wood, under a finish that is 100% food safe.', 'Every color you see grew that way. There are no stains or dyes in it, and nothing on it that isn’t food safe.', 'It is all natural: no stains, no dyes, and a finish that is 100% food safe.'],
+  pureWood: ['No stains, no dyes: every color in it is the wood’s own.', 'Nothing here is stained or dyed. The colors are the natural colors of the wood.', 'Every color you see grew that way, with no stains or dyes.'],
+  pureFood: ['The finish is 100% food safe.', 'Everything on it is 100% food safe.'],
   open: [
     'No. {no} is {a} {noun} {made}{when}.',
     'This {noun} is No. {no}, {made}{when}.',
@@ -2007,6 +2020,9 @@ const SIDE_VIEW_FOR = {
     const para = b => `<p class="${b.kind === 'wood' ? '' : b.kind}">${b.kind === 'care' ? esc(b.text).replace(/^Care:/, '<b>Care:</b>') : esc(b.text).replace(/\n/g, '<br>')}</p>`;
     const body = main.filter(b => b.kind !== 'care'), care = main.filter(b => b.kind === 'care');
     const paras = body.map(para).join('') + (more.length ? `<details class="more"><summary>Tell me more about the ${uniq.length > 1 ? 'woods' : 'wood'}</summary>${more.map(para).join('')}</details>` : '') + care.map(para).join('') + tail.map(para).join('');
+    const tick = '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill="var(--green)"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const fin = d.f && d.f !== 'Unfinished' ? d.f.toLowerCase().replace('rubio monocoat', 'Rubio Monocoat') : '';
+    const prs = d.pr || '', pure = prs ? `<div class="pure">${prs.includes('n') ? `<div>${tick}<p style="margin:0"><b>No stains or dyes</b><span>Every color is the natural color of the wood.</span></p></div>` : ''}${prs.includes('f') ? `<div>${tick}<p style="margin:0"><b>100% food safe</b><span>${fin ? `Finished with ${esc(fin)}, and nothing else.` : 'Nothing on it but wood.'}</span></p></div>` : ''}<div>${tick}<p style="margin:0"><b>Made by hand, one at a time</b><span>No. ${no} is the only one like it.</span></p></div></div>` : '';
     const lam = ws.length > 1 && !d.bd && !d.bw;
     const woodsLabel = lam ? `${ws.length} strips${uniq.length < ws.length ? ` of ${uniq.length} woods` : ''}, left to right` : uniq.length > 1 ? `${uniq.length} woods` : 'The wood';
     m.innerHTML = `
@@ -2014,16 +2030,19 @@ const SIDE_VIEW_FOR = {
       <p class="no">No. ${no}</p>
       <h1>${esc(d.t)}</h1>
       <p class="sub">${esc([d.d ? 'Made in ' + d.d : '', d.f && d.f !== 'Unfinished' ? 'finished with ' + d.f.toLowerCase().replace('rubio monocoat', 'Rubio Monocoat') : ''].filter(Boolean).join(', '))}</p>
+      ${d.mp && short ? `<div class="hero"><img src="ph/${esc(d.mp)}.jpg" alt="${esc(d.t)} No. ${no}" onerror="this.closest('.hero').remove()"></div>` : ''}
       ${art ? `<div class="art">${art}</div>` : ''}
       ${ws.length ? `<div class="woods"><div class="lab">${esc(woodsLabel)}</div>
         ${lam ? `<div class="strip">${ws.map((w, i) => `<i style="background:${esc(w[1])};flex:${d.sw ? +d.sw[i] || 1 : 1}" title="${esc(w[0])}"></i>`).join('')}</div>` : ''}
         <div class="legend">${uniq.map(w => `<span><b style="background:${esc(w[1])}"></b>${esc(w[0])}</span>`).join('')}</div></div>` : '<div style="height:24px"></div>'}
       <div class="story">${paras}</div>
-      ${d.ph && d.ph.length && short ? `<div class="made"><h2>How it was made</h2><div class="grid">${d.ph.map(([id, cap, dt]) => `<figure><img src="ph/${esc(id)}.jpg" loading="lazy" alt="${esc(cap || 'Progress photo')}" onerror="this.closest('figure').remove()">${cap || dt ? `<figcaption>${dt ? `<b>${esc(dt)}</b>` : ''}${esc(cap)}</figcaption>` : ''}</figure>`).join('')}</div></div><div id="lb"><img alt=""></div>` : ''}
+      ${pure}
+      ${d.ph && d.ph.length && short ? `<details class="more made"><summary>See how it was made <span style="font-weight:500;color:var(--dim);margin-left:auto">${d.ph.length} photo${d.ph.length > 1 ? 's' : ''}</span></summary><div class="grid">${d.ph.map(([id, cap, dt]) => `<figure><img src="ph/${esc(id)}.jpg" loading="lazy" alt="${esc(cap || 'Progress photo')}" onerror="this.closest('figure').remove()">${cap || dt ? `<figcaption>${dt ? `<b>${esc(dt)}</b>` : ''}${esc(cap)}</figcaption>` : ''}</figure>`).join('')}</div></details>` : ''}
+      <div id="lb"><img alt=""></div>
       ${ask}
       <div class="foot"><span><b>No. ${no}</b>, one of a kind</span><span>${esc(d.sh || '')}</span></div>`;
     const lb = document.getElementById('lb');
-    if (lb) { m.querySelectorAll('.made img').forEach(i => i.onclick = () => { lb.firstChild.src = i.src; lb.classList.add('on'); }); lb.onclick = () => lb.classList.remove('on'); }
+    if (lb) { m.querySelectorAll('.made img, .hero img').forEach(i => i.onclick = () => { lb.firstChild.src = i.src; lb.classList.add('on'); }); lb.onclick = () => lb.classList.remove('on'); }
   } catch (e) {
     m.innerHTML = e.message === 'soon' ? '<div class="err">This story is on its way. Give it a minute and scan again.</div>' : '<div class="err">This link is missing its details. Try scanning the tag again.</div>';
   }

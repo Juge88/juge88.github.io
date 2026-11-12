@@ -10,7 +10,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const clone = o => JSON.parse(JSON.stringify(o));
 const bridge = window.Android || null;
-const APP_VERSION = '2.0.2';
+const APP_VERSION = '2.1.0';
 
 /* ---------- Storage ---------- */
 const KEY = 'bench.v1';
@@ -334,7 +334,7 @@ function storyPlan(p, depth = 0) {
   const key = p.id + ':' + p.no + ':' + depth;
   if (planCache.has(key)) return planCache.get(key);
   const R = rng(seedOf(p)), plan = {};
-  for (const k of ['open', 'unique', 'shape', 'list', 'obs', 'pair', 'build', 'fin', 'close', 'combo', 'when', 'pattern', 'look']) plan[k] = R();
+  for (const k of ['open', 'unique', 'shape', 'list', 'obs', 'pair', 'build', 'fin', 'close', 'combo', 'when', 'pattern', 'look', 'pure']) plan[k] = R();
   const prev = depth < 6 ? prevPiece(p) : null;
   if (prev) plan._prev = storyPlan(prev, depth + 1);
   planCache.set(key, plan); return plan;
@@ -466,6 +466,17 @@ function closingLine(p, plan, depth = 0) {
 function woodNotes(p) {
   return uniqWoods(p.woods).filter(w => w.story).map(w => LIB.some(l => l.id === w.id) && w.story === LIB.find(l => l.id === w.id).story ? w.story : `About the ${w.name.toLowerCase()}: ${w.story}`);
 }
+// What the piece can honestly promise: natural color (no stains or dyes) and a food-safe finish.
+// Both can be switched off in Shop → Story page; a finish can be marked not food safe in Shop → Finishes.
+const finishFoodSafe = name => { const f = (S.finishes || []).find(x => x.name === name); return f && f.foodSafe != null ? !!f.foodSafe : !name || /unfinished|rubio|mineral|butter|food|beeswax|wax|tung|walnut oil/i.test(name); };
+function promisesOf(p) {
+  const st = S.settings, t = typeById(p.type), epoxy = t.bowl && p.bowl && p.bowl.kind === 'epoxy';
+  return { wood: st.promiseWood !== false, food: st.promiseFood !== false && !epoxy && finishFoodSafe(p.finish) };
+}
+function pureLine(p, plan) {
+  const pr = promisesOf(p), list = pr.wood && pr.food ? PHRASES.pureBoth : pr.wood ? PHRASES.pureWood : pr.food ? PHRASES.pureFood : null;
+  return list ? pickOf(plan, 'pure', list) : '';
+}
 function genStory(p) {
   const st = S.settings, plan = storyPlan(p), lc = s => s.toLowerCase();
   const maker = (st.maker || '').trim(), shop = (st.shop || '').trim();
@@ -476,7 +487,7 @@ function genStory(p) {
   if (!/only one|Every piece/.test(openT) && plan.unique < .55) open += ' ' + pickOf(plan, 'unique', PHRASES.unique);
   const special = p.special && p.special.trim() ? p.special.trim().replace(/([^.!?"”])$/, '$1.') : '';
   const wood = woodParagraph(p, plan), design = designParagraph(p, plan);
-  const making = [buildLine(p, plan), finishLine(p, plan)].filter(Boolean).join(' ');
+  const making = [buildLine(p, plan), finishLine(p, plan), pureLine(p, plan)].filter(Boolean).join(' ');
   const care = careOf(p) ? 'Care: ' + careOf(p) : '';
   const close = closingLine(p, plan) + (maker ? `\n— ${maker}` : '');
   const shapes = [
@@ -543,7 +554,8 @@ function genListing(p, style = 'full') {
     const f = featList(bd); if (f.length) L.push(`• ${cap(joinList(f))}`);
   }
   if (p.size) L.push(`• About ${p.size} long`);
-  if (p.finish && p.finish !== 'Unfinished') L.push(`• Finished with ${p.finish.toLowerCase().replace('rubio monocoat', 'Rubio Monocoat')}${/rubio|mineral|butter|food/i.test(p.finish) ? ' (food safe)' : ''}`);
+  if (p.finish && p.finish !== 'Unfinished') L.push(`• Finished with ${p.finish.toLowerCase().replace('rubio monocoat', 'Rubio Monocoat')}${promisesOf(p).food ? ' (100% food safe)' : ''}`);
+  if (promisesOf(p).wood) L.push('• No stains or dyes. Every color is the natural color of the wood');
   if (st.pageUrl) L.push(`• Comes with a tag. Scan it to read this ${nounOf(p)}'s story`);
   const care = careOf(p); if (care) { L.push(''); L.push('Care: ' + care.split('. ')[0].replace(/\.$/, '') + '.'); }
   if (st.listingEnd) { L.push(''); L.push(st.listingEnd); }
@@ -566,6 +578,8 @@ function pagePayload(p) {
   };
   const shown = (p.buildPhotos || []).filter(b => !b.hide).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   if (shown.length) o.ph = shown.map(b => [b.id, b.caption || '', b.date ? new Date(b.date + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '']);
+  const pr = promisesOf(p), prs = (pr.wood ? 'n' : '') + (pr.food ? 'f' : ''); if (prs) o.pr = prs;
+  if (st.pagePhoto !== false && (p.photos || []).length) o.mp = p.photos[0];
   const ix = id => Math.max(0, p.woods.indexOf(id)).toString(36);
   if (ts.length && ts.every(x => x.builtin)) { o.tp = ts.map(x => x.code); if (p.angle) o.ag = p.angle; }
   const sw = stripW(p); if (sw && new Set(sw).size > 1) o.sw = sw.map(x => +x.toFixed(4));
@@ -578,7 +592,7 @@ function pagePayload(p) {
   }
   return o;
 }
-async function pageHash(p) { const o = pagePayload(p); delete o.ph; return '#' + b64url(await deflate(JSON.stringify(o))); }   // photos only travel with the short link
+async function pageHash(p) { const o = pagePayload(p); delete o.ph; delete o.mp; return '#' + b64url(await deflate(JSON.stringify(o))); }   // photos only travel with the short link
 async function pageLink(p) {
   const base = (S.settings.pageUrl || '').trim().replace(/#.*$/, ''); if (!base) return null;
   if (ghOn() && p.pubId && p.pubHash === pubHash(p)) return base + '#' + p.pubId;   // short link: the details live on the page
@@ -671,13 +685,15 @@ function webPhoto(dataUrl, max = 1100) {
 let ghQueue = Promise.resolve();
 function publishPieces(list) {
   const run = async () => {
-    const g = S.settings.gh, files = [], done = [], used = new Set(S.pieces.map(q => q.pubId).filter(Boolean)), sent = new Set(g.sent || []), sending = new Set();
+    const st0 = S.settings, g = S.settings.gh, files = [], done = [], used = new Set(S.pieces.map(q => q.pubId).filter(Boolean)), sent = new Set(g.sent || []), sending = new Set();
     if (g.pageVer !== pageVersion()) files.push({ path: 'index.html', content: await storyPageHtml() }, { path: '.nojekyll', content: '\n' }, ...await appMirrorFiles());
     for (const p of list) {
       const json = JSON.stringify(pagePayload(p)), h = strHash(json);
       if (p.pubId && p.pubHash === h) continue;
       const id = p.pubId || newPubId(used);
       files.push({ path: `p/${id}.json`, content: json }); done.push([p, id, h]);
+      const mp = st0.pagePhoto !== false && (p.photos || [])[0];
+      if (mp && !sent.has(mp) && !sending.has(mp)) { const d = await photoGet(mp); if (d) { files.push({ path: `ph/${mp}.jpg`, b64: await webPhoto(d, 1400) }); sending.add(mp); } }
       for (const b of (p.buildPhotos || [])) {
         if (b.hide || sent.has(b.id) || sending.has(b.id)) continue;
         const d = await photoGet(b.id); if (!d) continue;
@@ -1420,7 +1436,7 @@ VIEWS.piece = ({ id }) => {
   const dates = { building: shortDate(p.date), available: shortDate(p.doneDate), sold: p.soldTo ? esc(p.soldTo) : shortDate(p.soldDate) };
   const at = ['building', 'available', 'sold'].indexOf(p.status);
   v.innerHTML = `
-    <div class="shots">${photos.map(ph => `<div><img data-photo="${ph}" data-big="${ph}" alt=""></div>`).join('')}${art ? `<div class="preview bar" id="pv"><div class="pvart">${art}</div>${tools}</div>` : ''}</div>
+    <div class="shots">${photos.map((ph, i) => `<div><img data-photo="${ph}" data-big="${ph}" alt="">${i === 0 && photos.length > 1 ? '<span class="mainb">Main</span>' : ''}</div>`).join('')}${art ? `<div class="preview bar" id="pv"><div class="pvart">${art}</div>${tools}</div>` : ''}</div>
     <div class="pd-head"><span class="serial">No. ${pad(p.no)}</span></div>
     <div class="pd-type">${esc(typeName(p))}${type.board && p.board ? ` <span class="muted" style="font-weight:450">${esc(boardTitle(p.board))}</span>` : ''}</div>
     <div class="pd-meta">${esc(meta.join(', '))}</div>
@@ -1449,7 +1465,7 @@ VIEWS.piece = ({ id }) => {
     ${p.storyEdited ? `<p class="note">You edited this story. <button class="btn small ghost" id="regen">Write it again from the details</button></p>` : p.storyLocked ? `<p class="note">Kept as it was when it sold, so the buyer's page stays the same. <button class="btn small ghost" id="regen">Write it again</button></p>` : ''}
     <div style="height:24px"></div>`;
   fillPhotos(v);
-  $$('.shots img[data-big]', v).forEach(im => im.onclick = () => photoSheet(im.dataset.big));
+  $$('.shots img[data-big]', v).forEach(im => im.onclick = () => photoArrange(p.photos, p.photos.indexOf(im.dataset.big), { onChange: () => { save(); autoPublish(8000); render(); } }));
   $('#pvMode', v)?.addEventListener('click', () => { viewMode = viewMode === 'templates' ? 'finished' : 'templates'; render(); });
   $('#edit').onclick = () => go('editPiece', { id });
   $('#more').onclick = () => pieceMenu(p, true);
@@ -1523,6 +1539,19 @@ function setStatus(p, s) {
   if (s !== 'sold' && was === 'sold') { p.storyLocked = false; }
   save(); autoPublish(8000); render();
   if (s === 'available' && was === 'building' && !p.printed) askPrint(p);
+}
+// One photo, big, with the ways to rearrange it. The first photo is the main one: it leads the list, gallery, listing and story page.
+function photoArrange(list, i, o = {}) {
+  const id = list[i], n = list.length, done = () => { closeSheet(); o.onChange && o.onChange(); };
+  const mv = j => { list.splice(i, 1); list.splice(j, 0, id); done(); };
+  openSheet(`<img data-photo="${id}" alt="" style="width:100%;max-height:56vh;object-fit:contain;border-radius:14px;display:block;background:var(--surface-2)">
+    <p class="note center" style="margin:10px 0 12px">${i === 0 ? (n > 1 ? 'This is the main photo. It leads everywhere the piece shows up.' : 'This is the main photo.') : `Photo ${i + 1} of ${n}`}</p>
+    ${i > 0 ? `<button class="btn primary wide" id="paMain">Make this the main photo</button>` : ''}
+    ${n > 1 ? `<div class="row" style="margin-top:10px"><button class="btn" id="paL" ${i === 0 ? 'disabled' : ''}>← Move earlier</button><button class="btn" id="paR" ${i === n - 1 ? 'disabled' : ''}>Move later →</button></div>` : ''}`);
+  fillPhotos($('#sheetCard'));
+  $('#paMain')?.addEventListener('click', () => { mv(0); toast('Main photo changed'); });
+  $('#paL')?.addEventListener('click', () => mv(i - 1));
+  $('#paR')?.addEventListener('click', () => mv(i + 1));
 }
 function photoSheet(id) {
   openSheet(`<img data-photo="${id}" alt="" style="width:100%;border-radius:14px;display:block">`); fillPhotos($('#sheetCard'));
@@ -2008,7 +2037,7 @@ VIEWS.editPiece = ({ id }, frame) => {
       <label class="f">What's special about it? <span>Goes in the story</span></label>
       <textarea id="special" style="min-height:70px" placeholder="The cherry came from my grandpa's tree">${esc(p.special)}</textarea>
       <div id="comboRow"></div>
-      <label class="f">Finished photos <span>The first one leads everywhere</span></label><div class="photos" id="photos"></div></div>
+      <label class="f">Finished photos <span>Tap one to make it the main photo or move it</span></label><div class="photos" id="photos"></div></div>
     <div class="tray"><div class="tray-h">Details</div>
       <div class="row"><div><label class="f" style="margin-top:0">Number</label><input id="no" inputmode="numeric" value="${p.no}"></div><div><label class="f" style="margin-top:0">Started</label><input id="date" type="date" value="${esc(p.date)}"></div></div>
       <label class="f">Finish</label><select id="finish">${S.finishes.map(f => `<option ${f.name === p.finish ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select>
@@ -2060,9 +2089,10 @@ VIEWS.editPiece = ({ id }, frame) => {
   drawPreview();
   if (tplType) { p.widths ||= []; woodPicker($('#woods'), p.woods, () => { drawPreview(); $$('#slots .tpl').forEach(b => { $('.pv', b).innerHTML = tplArt(tplById(b.dataset.tp), p.woods, p.widths, true, colsValid(p) ? p.cols : null); }); }, p.widths, () => pieceArt(p)); }
   const drawPhotos = () => {
-    $('#photos').innerHTML = p.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" alt=""><button data-rmp="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="addPh" aria-label="Add photos">+</button>`;
+    $('#photos').innerHTML = p.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" data-arr="${i}" alt="">${i === 0 && p.photos.length > 1 ? '<span class="mainb">Main</span>' : ''}<button data-rmp="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="addPh" aria-label="Add photos">+</button>`;
     fillPhotos($('#photos'));
     $$('[data-rmp]', v).forEach(b => b.onclick = () => { p.photos.splice(+b.dataset.rmp, 1); drawPhotos(); });
+    $$('#photos [data-arr]').forEach(im => im.onclick = () => photoArrange(p.photos, +im.dataset.arr, { onChange: drawPhotos }));
     $('#addPh').onclick = async () => { await addPhotos(p.photos); drawPhotos(); };
   };
   drawPhotos();
@@ -2142,6 +2172,20 @@ function deletePieceNow(p, inside = false) {
       onTimeout: () => { if (!S.pieces.includes(gone)) [...(gone.photos || []), ...(gone.buildPhotos || []).map(b => b.id)].forEach(photoDel); } });
   });
 }
+// A short note to send the buyer after a sale: thanks, the story link, and the one care line that matters most
+async function thanksSheet(p) {
+  const st = S.settings, noun = nounOf(p), care = (careOf(p) || '').split('. ')[0].replace(/\.$/, '');
+  let link = ''; try { if (st.pageUrl) [link] = await readyLinks([p]); } catch (e) {}
+  const name = (p.soldTo || '').trim().split(/\s+/)[0];
+  const text = [`${name ? `Hi ${name}, t` : 'T'}hank you for buying ${typeName(p)} No. ${pad(p.no)}! It is the only one like it.`,
+    link ? `Here is its story, the woods in it and how to care for it:\n${link}` : '',
+    care ? `Quick care tip: ${care.charAt(0).toLowerCase() + care.slice(1)}.` : '',
+    `If you ever have a question about your ${noun}, just message me.${st.maker ? `\n— ${st.maker}${st.shop ? ', ' + st.shop : ''}` : ''}`].filter(Boolean).join('\n\n');
+  openSheet(`<h2>Thank-you message</h2><textarea id="tyT" style="min-height:230px">${esc(text)}</textarea>
+    <div class="row" style="margin-top:14px"><button class="btn" id="tyC">Copy</button><button class="btn primary" id="tyS">Send</button></div>`);
+  $('#tyC').onclick = () => copyText($('#tyT').value);
+  $('#tyS').onclick = () => shareText($('#tyT').value, `Thank you from ${st.shop || st.maker || 'the shop'}`);
+}
 function pieceMenu(p, inside = false) {
   if (!p) return;
   actionSheet(`${typeName(p)} No. ${pad(p.no)}`, [
@@ -2153,6 +2197,7 @@ function pieceMenu(p, inside = false) {
     p.status !== 'sold' && ['Mark as sold', () => setStatus(p, 'sold')],
     ['Listing for Marketplace', () => go('listing', { id: p.id })],
     ['Print a card', () => S.settings.pageUrl ? printCardsSheet(p) : pageSetupSheet(() => printCardsSheet(p))],
+    p.status === 'sold' && ['Thank-you message for the buyer', () => thanksSheet(p)],
     S.settings.pageUrl && ['Share the story link', async () => { const [link] = await readyLinks([p]); if (link) shareText(link, pieceTitle(p)); }],
     ['Delete', () => deletePieceNow(p, inside), true]
   ]);
@@ -2261,10 +2306,10 @@ VIEWS.project = ({ id }) => {
     <label class="f">Notes <span>(optional)</span></label><textarea id="pjN" style="min-height:90px" placeholder="Woods, how it went, who it's for">${esc(q.notes || '')}</textarea></div>
     <div class="sec">Photos</div><div class="photos" id="pjP"></div><div style="height:40px"></div>`;
   const photos = () => {
-    $('#pjP').innerHTML = q.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" data-big="${ph}" alt=""><button data-rm="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="pjAdd" aria-label="Add photos">+</button>`;
+    $('#pjP').innerHTML = q.photos.map((ph, i) => `<div class="ph"><img data-photo="${ph}" data-big="${ph}" alt="">${i === 0 && q.photos.length > 1 ? '<span class="mainb">Main</span>' : ''}<button data-rm="${i}" aria-label="Remove photo">×</button></div>`).join('') + `<button class="add" id="pjAdd" aria-label="Add photos">+</button>`;
     fillPhotos($('#pjP'));
     $$('[data-rm]', v).forEach(b => b.onclick = e => { e.stopPropagation(); photoDel(q.photos[+b.dataset.rm]); q.photos.splice(+b.dataset.rm, 1); save(); photos(); });
-    $$('img[data-big]', v).forEach(im => im.onclick = () => { openSheet(`<img data-photo="${im.dataset.big}" alt="" style="width:100%;border-radius:12px;display:block">`); fillPhotos($('#sheetCard')); });
+    $$('img[data-big]', v).forEach(im => im.onclick = () => photoArrange(q.photos, q.photos.indexOf(im.dataset.big), { onChange: () => { save(); photos(); } }));
     $('#pjAdd').onclick = async () => { await addPhotos(q.photos); save(); photos(); };
   };
   photos();
@@ -2973,6 +3018,13 @@ VIEWS.setStory = () => {
       <p class="note">The piece details ride inside the QR link, so the codes are busier. Upload the file yourself, and again after app updates.</p>
       <label class="f">Page address</label><input id="purl" value="${esc(st.pageUrl)}" placeholder="https://…" inputmode="url">
       <button class="btn wide" id="getPage" style="margin-top:12px">Save the story page file</button></details></div>`;
+  const sw = (key, t, sub) => `<button class="swrow" data-sw="${key}"><div class="grow"><div class="t">${t}</div><div class="s">${sub}</div></div><span class="switch ${st[key] !== false ? 'on' : ''}"><i></i></span></button>`;
+  v.insertAdjacentHTML('beforeend', `<div class="tray" style="margin-top:16px"><div class="tray-h">What every story says</div>
+    ${sw('promiseWood', 'No stains or dyes', 'Every color is the natural color of the wood')}
+    ${sw('promiseFood', '100% food safe', 'Only on pieces with a food-safe finish')}
+    ${sw('pagePhoto', 'Main photo on the story page', 'The finished photo you picked leads the page')}
+    <p class="note" style="margin:8px 0 0">These show in new stories, listings and on the story page. Sold pieces keep the story they sold with.</p></div><div style="height:24px"></div>`);
+  $$('[data-sw]', v).forEach(b => b.onclick = () => { const k = b.dataset.sw; st[k] = st[k] === false; save(); autoPublish(8000); render(); });
   $('#gsSet')?.addEventListener('click', () => pageSetupSheet(() => render()));
   $('#purl')?.addEventListener('change', () => { st.pageUrl = $('#purl').value.trim(); save(); });
   $('#gsOpen')?.addEventListener('click', () => openUrl(st.pageUrl));
@@ -3051,8 +3103,10 @@ function kindSheet(i) {
 function finishSheet(i) {
   const f = i >= 0 ? S.finishes[i] : { name: '', story: '' };
   openSheet(`<h2>${i >= 0 ? 'Edit finish' : 'New finish'}</h2><label class="f">Name</label><input id="fn" value="${esc(f.name)}"><label class="f">Story line</label><textarea id="fs" style="min-height:90px">${esc(f.story)}</textarea>
+    <button class="swrow" id="ffs" style="margin-top:6px"><div class="grow"><div class="t">Food safe</div><div class="s">Stories, listings and the story page say so</div></div><span class="switch ${finishFoodSafe(f.name) ? 'on' : ''}"><i></i></span></button>
     <div class="row" style="margin-top:16px">${i >= 0 ? '<button class="btn danger" id="fd">Delete</button>' : ''}<button class="btn primary" id="fok">Save</button></div>`);
-  $('#fok').onclick = () => { const n = $('#fn').value.trim(); if (!n) return toast('Name it'); const nf = { name: n, story: $('#fs').value.trim() }; if (i >= 0) S.finishes[i] = nf; else S.finishes.push(nf); save(); closeSheet(); render(); };
+  $('#fok').onclick = () => { const n = $('#fn').value.trim(); if (!n) return toast('Name it'); const nf = { name: n, story: $('#fs').value.trim(), foodSafe: $('#ffs .switch').classList.contains('on') }; if (i >= 0) S.finishes[i] = nf; else S.finishes.push(nf); save(); closeSheet(); render(); };
+  $('#ffs').onclick = () => $('#ffs .switch').classList.toggle('on');
   $('#fd')?.addEventListener('click', () => { S.finishes.splice(i, 1); save(); closeSheet(); render(); });
 }
 VIEWS.editType = ({ id }, frame) => {
