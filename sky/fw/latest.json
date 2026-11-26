@@ -1,1 +1,1 @@
-{"ver":19,"file":"ISS_Pointer_v19.bin","notes":"Smoother moves (every move eases in and out, satellites are followed continuously) and no more freezes at start-up."}
+{"ver":20,"file":"ISS_Pointer_v20.bin","notes":"Smoother moves, no start-up freezes, and updates that download reliably."}
