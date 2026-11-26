@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found</title>
+<script>
+// The Sky Pointer's QR code opens /sky/k/<link code>. Send it to the app with the code.
+(function(){var m=/^\/sky\/k\/([A-Z2-7]{16})\/?$/i.exec(location.pathname);
+ if(m){location.replace('/sky/#k='+m[1].toUpperCase());}
+ else if(/^\/sky(\/|$)/i.test(location.pathname)){location.replace('/sky/');}})();
+</script>
+<style>body{font-family:system-ui,sans-serif;background:#111;color:#eee;display:grid;place-items:center;min-height:90vh;margin:0}a{color:#fff}</style></head>
+<body><p>Page not found. <a href="/">Go to the home page</a></p></body></html>
