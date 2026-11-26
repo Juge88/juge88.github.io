@@ -1589,7 +1589,7 @@ let missed=0,DRIFT,PWR=null,pwrTold=false;
 async function pollState(){
   if(HOSTED&&document.hidden)return;
   try{const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),2500),r=await pfetch('/api/state',{signal:ctl.signal});clearTimeout(tm);const j=await r.json();
-    if(isFinite(j.pan)){SV.pan=j.pan;SV.tilt=j.tilt}if(j.ver)PTRVER=j.ver;if('ota' in j){PTROTA=j.ota;PTROTAERR=j.otaErr||''}if('btn' in j)BTN={down:j.btn,n:j.presses};DRIFT=('drift' in j)?j.drift:undefined;if('rst' in j){PWR={rst:j.rst,dips:j.dips,up:j.up,rssi:j.rssi};if(j.rst==='brownout'&&!pwrTold){pwrTold=true;toast('The pointer restarted because its power dipped. Try a shorter, thicker cord or a 2 A charger.')}}
+    if(isFinite(j.pan)){SV.pan=j.pan;SV.tilt=j.tilt}if(j.ver)PTRVER=j.ver;if(j.clk===false&&Date.now()>1.7e12&&performance.now()-(window._clkSent||-1e9)>10000){window._clkSent=performance.now();api('/api/time',{ms:Date.now()})}if('ota' in j){PTROTA=j.ota;PTROTAERR=j.otaErr||''}if('btn' in j)BTN={down:j.btn,n:j.presses};DRIFT=('drift' in j)?j.drift:undefined;if('rst' in j){PWR={rst:j.rst,dips:j.dips,up:j.up,rssi:j.rssi};if(j.rst==='brownout'&&!pwrTold){pwrTold=true;toast('The pointer restarted because its power dipped. Try a shorter, thicker cord or a 2 A charger.')}}
     if(missed>=4){toast('Pointer is back');initSettings();rlStatus()}missed=0;$('#offline').hidden=true;const l=$('#link');l.textContent='Pointer connected';l.className='on'}
   catch(e){missed++;if(missed>=4){$('#offline').hidden=false;$('#offTx').textContent=HOSTED?'The pointer isn’t answering. Check that it’s plugged in and on Wi-Fi. The sky, planets and satellites still work.':'The pointer isn’t answering. Check that it has power and that your phone is on its Wi-Fi.';if(missed===4)rlStatus();const l=$('#link');l.textContent='Pointer not answering';l.className='bad'}}
 }
@@ -1726,7 +1726,10 @@ function refresh(force){
   if(TAB==='iss'){if(force||slow%5===0)renderIss();else drawMap()}
   if(TAB==='planets'&&(force||slow%30===0))renderPlanets();
   if(TAB==='ptr'){renderPtrHero();syncSliders();if(force&&!tourT&&!$('#howTxt').textContent)$('#howTxt').textContent=HOW_DEFAULT}
-  if(TG.kind==='sat'&&DEV&&performance.now()-satLastSend>2000){satLastSend=performance.now();const r=resolve(TG,simNow());api('/api/point',{kind:'free',az:+r.az.toFixed(1),alt:+Math.max(0,r.alt).toFixed(1),name:TG.name})}
+  if(TG.kind==='sat'&&DEV&&performance.now()-satLastSend>2000){satLastSend=performance.now();const t0=simNow(),r=resolve(TG,t0),r2=resolve(TG,t0+1000);
+    /* send where it is AND how fast it moves, so the pointer glides along between updates instead of hopping */
+    const vaz=((r2.az-r.az+540)%360)-180,valt=r.alt<0?0:r2.alt-r.alt;
+    api('/api/point',{kind:'free',az:+r.az.toFixed(2),alt:+Math.max(0,r.alt).toFixed(2),vaz:+vaz.toFixed(3),valt:+valt.toFixed(3),t:Date.now(),name:TG.name})}
   slow++;
 }
 let lastStat=0;

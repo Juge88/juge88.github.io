@@ -1,6 +1,6 @@
 // Sky Pointer: keeps a copy of the app on the phone so it opens with no internet.
 // The page itself is checked online first (so updates show up), and the saved copy is used when offline.
-const C='sky-v1';
+const C='sky-v2';
 const FILES=['./','index.html','icon.png','icon-512.png','manifest.json'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(C).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==C).map(x=>caches.delete(x)))).then(()=>self.clients.claim()))});
